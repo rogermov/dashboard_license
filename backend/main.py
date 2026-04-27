@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import sqlite3, pandas as pd, requests, io, re, os, unicodedata
+import sqlite3, pandas as pd, requests, io, re, os, unicodedata, json
 from typing import Optional
 from datetime import datetime
 
@@ -307,7 +307,7 @@ def reset_all():
 
 # ─── DOCUSIGN ENDPOINTS ───────────────────────────────────────────────────────
 
-from docusign_integration import get_config, sync_account, generate_consent_url
+from docusign_integration import get_config, sync_account, generate_consent_url, get_jwt_token, get_envelopes_count
 
 @app.get("/docusign/status")
 def docusign_status():
@@ -372,7 +372,7 @@ def docusign_sync(account_id: Optional[str] = ""):
 @app.get("/docusign/users")
 def docusign_users(account_id: str="", status: str="", search: str=""):
     conn = get_db(); c = conn.cursor()
-    query = "SELECT email,name,status,account_name,imported_at FROM docusign_users WHERE 1=1"
+    query = "SELECT email,name,status,account_name,imported_at,raw_json FROM docusign_users WHERE 1=1"
     params = []
     if account_id: query+=" AND account_id=?"; params.append(account_id)
     if status:     query+=" AND status=?"; params.append(status)
@@ -381,7 +381,54 @@ def docusign_users(account_id: str="", status: str="", search: str=""):
         params+=[f"%{search.lower()}%",f"%{search.lower()}%"]
     query+=" ORDER BY account_name,status,email"
     rows = c.execute(query,params).fetchall(); conn.close()
-    return [dict(r) for r in rows]
+    
+    result = []
+    for r in rows:
+        d = dict(r)
+        raw_data = json.loads(d.pop("raw_json") or "{}")
+        # Puxa APENAS o perfil real
+        d["permission_profile"] = raw_data.get("permissionProfileName") or "Sem Perfil"
+        result.append(d)
+    return result
+
+@app.get("/docusign/envelopes")
+def docusign_envelopes(start: str, end: str):
+    config = get_config()
+    if not config["integration_key"]: raise HTTPException(status_code=400, detail="DocuSign não configurado.")
+        
+    token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
+    results = []; total = 0
+    conn = get_db()
+    
+    for account in config["accounts"]:
+        if not account["id"]: continue
+        try:
+            data = get_envelopes_count(account, token, start, end)
+            env_dict = {u["email"]: u["count"] for u in data["users"]}
+            
+            db_users = conn.execute("SELECT email, name, raw_json FROM docusign_users WHERE account_id=?", (account["id"],)).fetchall()
+            
+            account_users = []
+            for row in db_users:
+                raw_data = json.loads(row["raw_json"] or "{}")
+                perm = raw_data.get("permissionProfileName") or "Sem Perfil"
+                count = env_dict.get(row["email"], 0) 
+                
+                account_users.append({
+                    "email": row["email"], "name": row["name"], 
+                    "count": count, "permission_profile": perm
+                })
+                
+            results.append({
+                "account_id": account["id"], "account_name": account["name"], 
+                "envelopes_sent": data["total"], "users": account_users
+            })
+            total += data["total"]
+        except Exception as e:
+            results.append({"account_id": account["id"], "account_name": account["name"], "envelopes_sent": 0, "users": []})
+            
+    conn.close()
+    return {"total_sent": total, "accounts": results}
 
 # ─── DEBUG ENDPOINT (remover após resolver) ───────────────────────────────────
 @app.get("/docusign/debug")
@@ -425,3 +472,14 @@ def docusign_debug():
         result["accounts"].append(acc_info)
     
     return result
+
+@app.get("/docusign/debug_user")
+def docusign_debug_user(email: str = ""):
+    conn = get_db()
+    if email:
+        row = conn.execute("SELECT raw_json FROM docusign_users WHERE email LIKE ? LIMIT 1", (f"%{email}%",)).fetchone()
+    else:
+        row = conn.execute("SELECT raw_json FROM docusign_users LIMIT 1").fetchone()
+    conn.close()
+    
+    return json.loads(row["raw_json"]) if row else {"erro": "Nenhum usuario encontrado"}

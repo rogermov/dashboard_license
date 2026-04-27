@@ -163,3 +163,45 @@ def generate_consent_url(integration_key: str) -> str:
         f"&client_id={integration_key}"
         f"&redirect_uri=https://account.docusign.com"
     )
+
+def get_envelopes_count(account: dict, access_token: str, start_date: str, end_date: str) -> dict:
+    """Busca o total de envelopes e agrupa a quantidade de envios por usuário"""
+    base_uri = (account.get("base_uri") or "").rstrip("/")
+    account_id = account["id"]
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    
+    # 1. Removi o count=1000 que pode estar bloqueando a API
+    url = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={start_date}T00:00:00Z&to_date={end_date}T23:59:59Z&user_filter=all"
+    
+    resp = requests.get(url, headers=headers, timeout=20)
+    
+    # 2. Radar de erros e Plano B
+    if resp.status_code != 200:
+        print(f"\n[ERRO DOCUSIGN - {account['name']}] Status {resp.status_code}: {resp.text}\n")
+        
+        # Se a DocuSign recusou por causa do user_filter=all, tentamos sem ele
+        url_fallback = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={start_date}T00:00:00Z&to_date={end_date}T23:59:59Z"
+        resp = requests.get(url_fallback, headers=headers, timeout=20)
+        
+        if resp.status_code != 200:
+            return {"total": 0, "users": []}
+            
+    data = resp.json()
+    total = int(data.get("totalSetSize", 0))
+    envelopes = data.get("envelopes", [])
+    
+    user_counts = {}
+    for env in envelopes:
+        sender = env.get("sender", {})
+        email = (sender.get("email") or "Desconhecido").lower()
+        name = sender.get("userName") or "Desconhecido"
+        
+        if email not in user_counts:
+            user_counts[email] = {"name": name, "email": email, "count": 0}
+        user_counts[email]["count"] += 1
+        
+    # Ordena para quem enviou mais envelopes aparecer no topo
+    users_list = sorted(list(user_counts.values()), key=lambda x: x["count"], reverse=True)
+    
+    return {"total": total, "users": users_list}
+

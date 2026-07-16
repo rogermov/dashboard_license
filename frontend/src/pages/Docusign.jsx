@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, CheckCircle, Clock, AlertTriangle, ExternalLink, Search, Download, Loader, Calendar, Send, User, Filter } from 'lucide-react';
+import { RefreshCw, CheckCircle, Clock, AlertTriangle, ExternalLink, Search, Download, Loader, Send, User, Filter } from 'lucide-react';
 import { api } from '../hooks/api.js';
 
 const SM = { active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, pending: { label: 'Pendente', color: 'var(--yellow)', bg: 'var(--yellow-bg)' } };
@@ -14,7 +14,7 @@ function exportCSV(data, filename) {
   const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
 }
 
-// Exportação Customizada para o seu Script Python (Email na 1ª Coluna)
+// Exportação Customizada para o seu Script Python de Migração
 function exportMigrationCSV(data, filename) {
   if (!data.length) return;
   const headers = ['Email', 'Nome', 'Conta', 'Perfil', 'Envios'];
@@ -37,11 +37,13 @@ function exportMigrationCSV(data, filename) {
 export default function Docusign() {
   const [status, setStatus] = useState(null);
   const [users, setUsers] = useState([]);
+  const [availableProfiles, setAvailableProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(null);
   const [search, setSearch] = useState('');
   const [filterAccount, setFilterAccount] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterProfile, setFilterProfile] = useState('');
   const [usersLoading, setUsersLoading] = useState(false);
   const [toast, setToast] = useState(null);
 
@@ -52,14 +54,35 @@ export default function Docusign() {
   const [envLoading, setEnvLoading] = useState(false);
   const [envUserSearch, setEnvUserSearch] = useState('');
   const [envSort, setEnvSort] = useState('asc'); 
-  
   const [envMaxSends, setEnvMaxSends] = useState(''); 
   const [envFilterPerm, setEnvFilterPerm] = useState(''); 
 
   const showToast = (msg, ok) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 5000); };
 
   const loadStatus = async () => { setLoading(true); try { setStatus(await api.get('/docusign/status', { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
-  const loadUsers = async () => { setUsersLoading(true); try { const p = new URLSearchParams(); if (filterAccount) p.append('account_id', filterAccount); if (filterStatus) p.append('status', filterStatus); if (search) p.append('search', search); setUsers(await api.get(`/docusign/users?${p}`, { noCache: true })); } catch { setUsers([]); } finally { setUsersLoading(false); } };
+  
+  const loadUsers = async () => { 
+    setUsersLoading(true); 
+    try { 
+      const p = new URLSearchParams(); 
+      if (filterAccount) p.append('account_id', filterAccount); 
+      if (filterStatus) p.append('status', filterStatus); 
+      if (filterProfile) p.append('profile', filterProfile);
+      if (search) p.append('search', search); 
+      
+      const data = await api.get(`/docusign/users?${p}`, { noCache: true });
+      setUsers(data);
+      
+      // Guarda os perfis disponíveis apenas na primeira carga para não perder as opções do filtro
+      if (!filterAccount && !filterStatus && !filterProfile && !search) {
+        setAvailableProfiles([...new Set(data.map(u => u.permission_profile))].filter(Boolean).sort());
+      }
+    } catch { 
+      setUsers([]); 
+    } finally { 
+      setUsersLoading(false); 
+    } 
+  };
   
   const loadEnvelopes = async () => {
     if (!startDate || !endDate) return showToast('Selecione as datas.', false);
@@ -76,13 +99,11 @@ export default function Docusign() {
   };
 
   useEffect(() => { loadStatus(); loadUsers(); }, []);
-  useEffect(() => { loadUsers(); }, [filterAccount, filterStatus]);
+  useEffect(() => { loadUsers(); }, [filterAccount, filterStatus, filterProfile]);
 
   const sync = async (accountId = '') => { setSyncing(accountId || 'all'); try { const qs = accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''; const res = await api.postForm(`/docusign/sync${qs}`, new FormData()); showToast(res.message, !res.errors?.length); await loadStatus(); await loadUsers(); } catch (e) { showToast('Erro na sincronização.', false); } finally { setSyncing(null); } };
 
   const accounts = status?.accounts || [];
-  const totalActive = accounts.reduce((s, a) => s + (a.active || 0), 0);
-  const totalPending = accounts.reduce((s, a) => s + (a.pending || 0), 0);
 
   const allEnvUsers = [];
   if (envStats) {
@@ -123,12 +144,12 @@ export default function Docusign() {
         <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>DocuSign</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Gestão de acessos e volume de uso</p></div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {status?.consent_url && <a href={status.consent_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.9rem', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', fontWeight: 500, textDecoration: 'none', boxShadow: 'var(--shadow-sm)' }}><ExternalLink size={13} />Consentimento</a>}
-          {activeTab === 'users' && <button onClick={() => sync()} disabled={!!syncing} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', background: 'var(--accent)', border: 'none', borderRadius: 'var(--radius)', color: '#fff', fontWeight: 600, fontSize: '0.82rem', opacity: syncing ? 0.7 : 1 }}>{syncing === 'all' ? <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}Revalidar Todas</button>}
+          {activeTab === 'users' && <button onClick={() => sync()} disabled={!!syncing} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', background: 'var(--accent)', border: 'none', borderRadius: 'var(--radius)', color: '#fff', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', opacity: syncing ? 0.7 : 1 }}>{syncing === 'all' ? <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}Revalidar Todas</button>}
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: '1.5rem', borderBottom: '1px solid var(--border)', marginBottom: '1.5rem' }}>
-        <button onClick={() => setActiveTab('users')} style={{ background: 'none', border: 'none', padding: '0 0 0.6rem 0', fontSize: '0.9rem', fontWeight: activeTab === 'users' ? 600 : 500, color: activeTab === 'users' ? 'var(--accent)' : 'var(--text2)', borderBottom: activeTab === 'users' ? '2px solid var(--accent)' : '2px solid transparent', cursor: 'pointer', transition: 'all 0.2s' }}>Gestão de Usuários</button>
+        <button onClick={() => setActiveTab('users')} style={{ background: 'none', border: 'none', padding: '0 0 0.6rem 0', fontSize: '0.9rem', fontWeight: activeTab === 'users' ? 600 : 500, color: activeTab === 'users' ? 'var(--accent)' : 'var(--text2)', borderBottom: activeTab === 'users' ? '2px solid var(--accent)' : '2px solid transparent', cursor: 'pointer', transition: 'all 0.2s' }}>Gestão de Utilizadores</button>
         <button onClick={() => setActiveTab('envelopes')} style={{ background: 'none', border: 'none', padding: '0 0 0.6rem 0', fontSize: '0.9rem', fontWeight: activeTab === 'envelopes' ? 600 : 500, color: activeTab === 'envelopes' ? 'var(--accent)' : 'var(--text2)', borderBottom: activeTab === 'envelopes' ? '2px solid var(--accent)' : '2px solid transparent', cursor: 'pointer', transition: 'all 0.2s' }}>Relatório de Envios</button>
       </div>
 
@@ -151,13 +172,22 @@ export default function Docusign() {
           <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)' }}>
             <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid var(--border)', display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
               <div style={{ position: 'relative', flex: 1, minWidth: 200 }}><Search size={13} color="var(--text3)" style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)' }} /><input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && loadUsers()} placeholder="Buscar por e-mail ou nome..." style={{ width: '100%', padding: '0.55rem 0.75rem 0.55rem 2rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.82rem', color: 'var(--text)', outline: 'none' }} /></div>
+              
               <select value={filterAccount} onChange={e => setFilterAccount(e.target.value)} style={{ padding: '0.55rem 0.75rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.82rem', color: 'var(--text)', outline: 'none' }}><option value="">Todas as contas</option>{accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.account_name}</option>)}</select>
+              
               <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ padding: '0.55rem 0.75rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.82rem', color: 'var(--text)', outline: 'none' }}><option value="">Todos os status</option><option value="active">Ativos</option><option value="pending">Pendentes</option></select>
-              <button onClick={() => exportCSV(users, `docusign-${new Date().toISOString().slice(0, 10)}.csv`)} disabled={!users.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', opacity: users.length ? 1 : 0.5 }}><Download size={13} />CSV</button>
+              
+              {/* NOVO: Filtro de Perfil de Permissão */}
+              <select value={filterProfile} onChange={e => setFilterProfile(e.target.value)} style={{ padding: '0.55rem 0.75rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.82rem', color: 'var(--text)', outline: 'none' }}>
+                <option value="">Todos os Perfis</option>
+                {availableProfiles.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+
+              <button onClick={() => exportCSV(users, `docusign-${new Date().toISOString().slice(0, 10)}.csv`)} disabled={!users.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: users.length ? 1 : 0.5 }}><Download size={13} />CSV</button>
             </div>
             <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
               <thead><tr style={{ background: 'var(--bg3)' }}>{['Email', 'Nome', 'Conta', 'Status', 'Perfil de Permissão', 'Sincronizado em'].map(h => <th key={h} style={{ padding: '0.65rem 1rem', textAlign: 'left', color: 'var(--text2)', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.7, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
-              <tbody>{usersLoading ? <tr><td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Carregando...</td></tr> : users.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)', fontSize: '0.85rem' }}>{accounts.some(a => a.last_sync) ? 'Nenhum usuário encontrado' : 'Clique em "Revalidar Todas" para buscar'}</td></tr> :
+              <tbody>{usersLoading ? <tr><td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Carregando...</td></tr> : users.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)', fontSize: '0.85rem' }}>{accounts.some(a => a.last_sync) ? 'Nenhum utilizador encontrado' : 'Clique em "Revalidar Todas" para procurar'}</td></tr> :
                 users.map((u, i) => { const s = SM[u.status] || SM.active; return <tr key={i} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}><td style={{ padding: '0.7rem 1rem', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text2)' }}>{u.email}</td><td style={{ padding: '0.7rem 1rem', fontWeight: 500 }}>{u.name || '—'}</td><td style={{ padding: '0.7rem 1rem', color: 'var(--text2)', fontSize: '0.78rem' }}>{u.account_name}</td><td style={{ padding: '0.7rem 1rem' }}><span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 700, fontFamily: 'var(--font-mono)', background: s.bg, color: s.color }}>{s.label}</span></td><td style={{ padding: '0.7rem 1rem' }}>{renderBadge(u.permission_profile)}</td><td style={{ padding: '0.7rem 1rem', fontFamily: 'var(--font-mono)', fontSize: '0.73rem', color: 'var(--text3)' }}>{u.imported_at?.slice(0, 16) || '—'}</td></tr>; })}
               </tbody>
             </table></div>
@@ -177,7 +207,7 @@ export default function Docusign() {
               <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={{ padding: '0.55rem 0.75rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '0.85rem', color: 'var(--text)', outline: 'none', fontFamily: 'var(--font)' }} />
             </div>
             <button onClick={loadEnvelopes} disabled={envLoading} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.6rem 1.25rem', background: 'var(--accent)', border: 'none', borderRadius: 'var(--radius)', color: '#fff', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer', height: '35px', opacity: envLoading ? 0.7 : 1 }}>
-              {envLoading ? <Loader size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <Search size={15} />} Buscar Envios
+              {envLoading ? <Loader size={15} style={{ animation: 'spin 1s linear infinite' }} /> : <Search size={15} />} Procurar Envios
             </button>
           </div>
 
@@ -222,7 +252,7 @@ export default function Docusign() {
                     <option value="desc">Maior volume ⬇</option>
                   </select>
 
-                  <button onClick={() => exportMigrationCSV(sortedEnvUsers, `migracao_docusign_${startDate}_a_${endDate}.csv`)} disabled={!sortedEnvUsers.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: sortedEnvUsers.length ? 1 : 0.5 }}><Download size={13} />CSV</button>
+                  <button onClick={() => exportMigrationCSV(sortedEnvUsers, `migracao_docusign_${startDate}_a_${endDate}.csv`)} disabled={!sortedEnvUsers.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: sortedEnvUsers.length ? 1 : 0.5 }}><Download size={13} />CSV P/ Migração</button>
                 </div>
               </div>
 
@@ -230,7 +260,7 @@ export default function Docusign() {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
                   <thead><tr style={{ background: 'var(--bg2)' }}>{['Conta', 'Nome', 'Email', 'Perfil de Permissão', 'Envios'].map((h, i) => <th key={h} style={{ padding: '0.65rem 1rem', textAlign: i === 4 ? 'right' : 'left', color: 'var(--text2)', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.7, borderBottom: '1px solid var(--border)' }}>{h}</th>)}</tr></thead>
                   <tbody>
-                    {sortedEnvUsers.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Nenhum usuário encontrado.</td></tr> :
+                    {sortedEnvUsers.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Nenhum utilizador encontrado.</td></tr> :
                      sortedEnvUsers.map((u, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
                         <td style={{ padding: '0.7rem 1rem', color: 'var(--text2)', fontSize: '0.78rem' }}>{u.account_name}</td>

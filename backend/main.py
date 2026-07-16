@@ -5,6 +5,8 @@ import sqlite3, pandas as pd, requests, io, re, os, unicodedata, json
 from typing import Optional
 from datetime import datetime
 
+from docusign_integration import get_config, get_jwt_token, get_users_for_account, get_envelopes_count, generate_consent_url
+
 load_dotenv()
 
 app = FastAPI(title="AccessGuard API")
@@ -19,7 +21,18 @@ EMAIL_COLUMN_HINTS = {
 }
 NAME_COLUMN_HINTS = ["nome de exibicao","nome de exibição","display name","nome completo","full name","nome do usuario","nome do usuário","name","nome","sobrenome"]
 
-# ─── DB ───────────────────────────────────────────────────────────────────────
+@app.on_event("startup")
+def otimizar_banco():
+    conn = get_db()
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_plat_email ON platform_users(email COLLATE NOCASE)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_term_email ON terminated_users(email COLLATE NOCASE)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_az_email ON azure_users(email COLLATE NOCASE)")
+        conn.commit()
+    except Exception as e:
+        print("Erro ao criar índices de otimização:", e)
+    finally:
+        conn.close()
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -57,7 +70,6 @@ def init_db():
         total INTEGER DEFAULT 0, active INTEGER DEFAULT 0, pending INTEGER DEFAULT 0,
         synced_at TEXT, error TEXT)""")
 
-    # Indexes
     for sql in [
         "CREATE INDEX IF NOT EXISTS idx_terminated_email ON terminated_users(email)",
         "CREATE INDEX IF NOT EXISTS idx_platform_email ON platform_users(email)",
@@ -69,19 +81,13 @@ def init_db():
     ]:
         c.execute(sql)
 
-    # Migrations
-    for col_sql in [
-        "ALTER TABLE platform_users ADD COLUMN display_name TEXT",
-    ]:
+    for col_sql in ["ALTER TABLE platform_users ADD COLUMN display_name TEXT"]:
         try: c.execute(col_sql)
         except: pass
-
     conn.commit()
     conn.close()
 
 init_db()
-
-# ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 def normalize_email(email: str) -> str:
     return str(email).strip().lower().replace("\ufeff","") if email else ""
@@ -123,33 +129,27 @@ def health(): return {"status":"ok","timestamp":datetime.now().isoformat()}
 
 @app.get("/stats")
 def get_stats():
-    conn = get_db(); c = conn.cursor()
-    total_terminated = c.execute("SELECT COUNT(*) FROM terminated_users").fetchone()[0]
-    total_azure      = c.execute("SELECT COUNT(*) FROM azure_users").fetchone()[0]
-    plat_rows = c.execute("SELECT platform, COUNT(*) as cnt FROM platform_users GROUP BY platform").fetchall()
-    platform_counts = {p:0 for p in PLATFORMS}
-    for r in plat_rows: platform_counts[r["platform"]] = r["cnt"]
-    exposure_rows = c.execute("""
-        SELECT pu.platform, COUNT(DISTINCT t.email) as cnt
-        FROM terminated_users t INNER JOIN platform_users pu ON t.email=pu.email
-        GROUP BY pu.platform""").fetchall()
-    exposure = {p:0 for p in PLATFORMS}
-    for r in exposure_rows: exposure[r["platform"]] = r["cnt"]
-    active_accesses = c.execute("""
-        SELECT COUNT(DISTINCT t.email) FROM terminated_users t
-        INNER JOIN platform_users pu ON t.email=pu.email""").fetchone()[0]
-    last_imports = c.execute("SELECT * FROM import_logs ORDER BY imported_at DESC LIMIT 5").fetchall()
+    conn = get_db()
+    total_terminated = conn.execute("SELECT COUNT(*) FROM terminated_users").fetchone()[0]
+    total_azure = conn.execute("SELECT COUNT(*) FROM azure_users").fetchone()[0]
+    terminated_with_access = conn.execute("""SELECT COUNT(DISTINCT p.email) FROM platform_users p INNER JOIN terminated_users t ON LOWER(p.email) = LOWER(t.email)""").fetchone()[0]
+    exposure_rows = conn.execute("""SELECT p.platform, COUNT(*) as count FROM platform_users p INNER JOIN terminated_users t ON LOWER(p.email) = LOWER(t.email) GROUP BY p.platform""").fetchall()
+    exposure_by_platform = {r["platform"]: r["count"] for r in exposure_rows}
+    platform_rows = conn.execute("SELECT platform, COUNT(*) as count FROM platform_users GROUP BY platform").fetchall()
+    platform_users_total = {r["platform"]: r["count"] for r in platform_rows}
     conn.close()
-    return {"total_terminated":total_terminated,"total_azure_users":total_azure,
-            "platform_users":platform_counts,"terminated_with_active_access":active_accesses,
-            "exposure_by_platform":exposure,"last_imports":[dict(r) for r in last_imports]}
+    return {
+        "total_terminated": total_terminated,
+        "terminated_with_active_access": terminated_with_access,
+        "total_azure_users": total_azure,
+        "exposure_by_platform": exposure_by_platform,
+        "platform_users": platform_users_total
+    }
 
 @app.get("/users/risk")
 def get_risk_users(search: str="", platform: str=""):
     conn = get_db(); c = conn.cursor()
-    query = """SELECT t.email,t.name,t.department,t.termination_date,
-               GROUP_CONCAT(DISTINCT pu.platform) as active_platforms
-               FROM terminated_users t INNER JOIN platform_users pu ON t.email=pu.email WHERE 1=1"""
+    query = """SELECT t.email,t.name,t.department,t.termination_date, GROUP_CONCAT(DISTINCT pu.platform) as active_platforms FROM terminated_users t INNER JOIN platform_users pu ON t.email=pu.email WHERE 1=1"""
     params = []
     if search:
         query += " AND (LOWER(t.email) LIKE ? OR LOWER(t.name) LIKE ?)"
@@ -170,8 +170,7 @@ def get_risk_users(search: str="", platform: str=""):
 def get_all_terminated(search: str=""):
     conn = get_db(); c = conn.cursor()
     if search:
-        rows = c.execute("SELECT * FROM terminated_users WHERE LOWER(email) LIKE ? OR LOWER(name) LIKE ? ORDER BY imported_at DESC",
-                         (f"%{search.lower()}%",f"%{search.lower()}%")).fetchall()
+        rows = c.execute("SELECT * FROM terminated_users WHERE LOWER(email) LIKE ? OR LOWER(name) LIKE ? ORDER BY imported_at DESC", (f"%{search.lower()}%",f"%{search.lower()}%")).fetchall()
     else:
         rows = c.execute("SELECT * FROM terminated_users ORDER BY imported_at DESC").fetchall()
     conn.close(); return [dict(r) for r in rows]
@@ -195,8 +194,7 @@ def licenses_by_domain():
 
 @app.post("/import/platform/csv")
 async def import_platform_csv(platform: str=Form(...), file: UploadFile=File(...)):
-    if platform not in PLATFORMS:
-        raise HTTPException(status_code=400, detail=f"Plataforma inválida: {PLATFORMS}")
+    if platform not in PLATFORMS: raise HTTPException(status_code=400, detail=f"Plataforma inválida: {PLATFORMS}")
     content = await file.read(); df = read_csv_flexible(content)
     hints = EMAIL_COLUMN_HINTS.get(platform,[]) + EMAIL_COLUMN_HINTS["default"]
     email_col = find_column(list(df.columns), hints) or df.columns[0]
@@ -209,14 +207,11 @@ async def import_platform_csv(platform: str=Form(...), file: UploadFile=File(...
         if not email or "@" not in email: skipped+=1; continue
         display_name = str(row.get(name_col,"")) if name_col else None
         try:
-            c.execute("INSERT INTO platform_users (email,platform,display_name) VALUES (?,?,?) ON CONFLICT(email,platform) DO UPDATE SET display_name=excluded.display_name,imported_at=CURRENT_TIMESTAMP",
-                      (email,platform,display_name)); count+=1
+            c.execute("INSERT INTO platform_users (email,platform,display_name) VALUES (?,?,?) ON CONFLICT(email,platform) DO UPDATE SET display_name=excluded.display_name,imported_at=CURRENT_TIMESTAMP", (email,platform,display_name)); count+=1
         except Exception as e: skipped+=1; print(f"INSERT ERROR: {e} | {email}")
-    c.execute("INSERT INTO import_logs (source,platform,records_imported,notes) VALUES (?,?,?,?)",
-              ("csv_upload",platform,count,f"coluna={email_col},pulados={skipped}"))
+    c.execute("INSERT INTO import_logs (source,platform,records_imported,notes) VALUES (?,?,?,?)", ("csv_upload",platform,count,f"coluna={email_col},pulados={skipped}"))
     conn.commit(); conn.close()
-    return {"imported":count,"skipped":skipped,"email_column_used":email_col,"platform":platform,
-            "message":f"{count} usuários importados para {platform} (coluna: '{email_col}')."}
+    return {"imported":count,"skipped":skipped,"email_column_used":email_col,"platform":platform,"message":f"{count} usuários importados."}
 
 @app.post("/import/azure/csv")
 async def import_azure_csv(file: UploadFile=File(...)):
@@ -232,8 +227,7 @@ async def import_azure_csv(file: UploadFile=File(...)):
         name = str(row.get(name_col,"")).strip() if name_col else None
         dept = str(row.get(dept_col,"")).strip() if dept_col else None
         try:
-            c.execute("INSERT INTO azure_users (email,name,department) VALUES (?,?,?) ON CONFLICT(email) DO UPDATE SET name=excluded.name,department=excluded.department,imported_at=CURRENT_TIMESTAMP",
-                      (email,name,dept)); count+=1
+            c.execute("INSERT INTO azure_users (email,name,department) VALUES (?,?,?) ON CONFLICT(email) DO UPDATE SET name=excluded.name,department=excluded.department,imported_at=CURRENT_TIMESTAMP", (email,name,dept)); count+=1
         except: pass
     c.execute("INSERT INTO import_logs (source,records_imported,notes) VALUES (?,?,?)",("azure_csv",count,f"coluna={email_col}"))
     conn.commit(); conn.close()
@@ -276,14 +270,12 @@ async def _process_terminated_df(df, source):
             if email: matched+=1
         if not email: not_found+=1; continue
         try:
-            c.execute("INSERT INTO terminated_users (email,name,department,termination_date) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET name=excluded.name,department=excluded.department,termination_date=excluded.termination_date,imported_at=CURRENT_TIMESTAMP",
-                      (email,name,dept,date)); count+=1
+            c.execute("INSERT INTO terminated_users (email,name,department,termination_date) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET name=excluded.name,department=excluded.department,termination_date=excluded.termination_date,imported_at=CURRENT_TIMESTAMP", (email,name,dept,date)); count+=1
         except: pass
-    c.execute("INSERT INTO import_logs (source,records_imported,notes) VALUES (?,?,?)",
-              (source,count,f"por_nome={matched},nao_encontrados={not_found}"))
+    c.execute("INSERT INTO import_logs (source,records_imported,notes) VALUES (?,?,?)", (source,count,f"por_nome={matched},nao_encontrados={not_found}"))
     conn.commit(); conn.close()
     msg = f"{count} desligados importados."
-    if matched: msg += f" {matched} encontrados por nome via Azure."
+    if matched: msg += f" {matched} encontrados via Azure."
     if not_found: msg += f" ⚠ {not_found} sem e-mail."
     return {"imported":count,"matched_by_name":matched,"not_found":not_found,"message":msg}
 
@@ -303,11 +295,9 @@ def reset_all():
     for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log"]:
         c.execute(f"DELETE FROM {t}")
     conn.commit(); conn.close()
-    return {"message":"Banco limpo com sucesso."}
+    return {"message":"Banco limpo."}
 
 # ─── DOCUSIGN ENDPOINTS ───────────────────────────────────────────────────────
-
-from docusign_integration import get_config, sync_account, generate_consent_url, get_jwt_token, get_envelopes_count
 
 @app.get("/docusign/status")
 def docusign_status():
@@ -316,170 +306,181 @@ def docusign_status():
     for account in config["accounts"]:
         if not account["id"]: continue
         log = c.execute("SELECT * FROM docusign_sync_log WHERE account_id=?", (account["id"],)).fetchone()
-        counts = {r["status"]:r["cnt"] for r in c.execute(
-            "SELECT status, COUNT(*) as cnt FROM docusign_users WHERE account_id=? GROUP BY status",
-            (account["id"],)).fetchall()}
+        counts = {r["status"]:r["cnt"] for r in c.execute("SELECT status, COUNT(*) as cnt FROM docusign_users WHERE account_id=? GROUP BY status", (account["id"],)).fetchall()}
         result.append({
-            "account_id":   account["id"],
-            "account_name": account["name"],
-            "configured":   bool(account["id"]),
-            "last_sync":    log["synced_at"] if log else None,
-            "last_error":   log["error"] if log else None,
-            "active":       counts.get("active",0),
-            "pending":      counts.get("pending",0),
-            "total":        sum(counts.values()),
+            "account_id": account["id"], "account_name": account["name"], "configured": bool(account["id"]),
+            "last_sync": log["synced_at"] if log else None, "last_error": log["error"] if log else None,
+            "active": counts.get("active",0), "pending": counts.get("pending",0), "total": sum(counts.values()),
         })
     conn.close()
     return {"accounts":result, "consent_url":generate_consent_url(config["integration_key"])}
 
 @app.post("/docusign/sync")
-def docusign_sync(account_id: Optional[str] = ""):
+def docusign_sync(account_id: str = ""):
     config = get_config()
-    if not config["integration_key"]:
-        raise HTTPException(status_code=400, detail="DocuSign não configurado. Preencha o .env")
+    token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
+    conn = get_db()
+    total_proc = 0
 
-    # --- INÍCIO DA LIMPEZA ---
-    if not account_id:
-        conn = get_db()
-        conn.execute("DELETE FROM platform_users WHERE platform='docusign'")
+    try:
+        # Apenas remove do dashboard geral os que vamos reimportar
+        if not account_id: conn.execute("DELETE FROM platform_users WHERE platform='docusign'")
+
+        for acc in config["accounts"]:
+            if account_id and acc["id"] != account_id: continue
+
+            try:
+                users = get_users_for_account(acc, token)
+
+                conn.execute("DELETE FROM docusign_users WHERE account_id=?", (acc["id"],))
+                if account_id:
+                    conn.execute("DELETE FROM platform_users WHERE platform='docusign' AND email IN (SELECT email FROM docusign_users WHERE account_id=?)", (account_id,))
+
+                for u in users:
+                    email = str(u.get("email", "")).lower().strip()
+                    name = str(u.get("userName", "")).strip()
+                    s_raw = str(u.get("userStatus", "Active")).lower().strip()
+
+                    # ─── A CORREÇÃO CIRÚRGICA AQUI ───
+                    if s_raw in ["active", "ativo"]:
+                        status = "active"
+                    elif s_raw == "closed":
+                        status = "closed"  # Agora os fechados ficam como fechados e somem dos pendentes!
+                    else:
+                        status = "pending"
+
+                    conn.execute("INSERT INTO docusign_users (account_id, account_name, email, name, status, raw_json) VALUES (?, ?, ?, ?, ?, ?)", (acc["id"], acc["name"], email, name, status, json.dumps(u)))
+
+                    # Filtro para não estourar licenças falsas
+                    if status == "active" and email:
+                        conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP""", (email, "docusign", name))
+
+                    total_proc += 1
+
+                conn.execute("INSERT INTO docusign_sync_log (account_id, account_name, synced_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(account_id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP", (acc["id"], acc["name"]))
+
+            except Exception as e:
+                print(f"Erro na conta {acc['name']}: {e}")
+
         conn.commit()
+        return {"message": f"Sincronização Finalizada! {total_proc} usuários atualizados."}
+    finally:
         conn.close()
-    # --- FIM DA LIMPEZA ---
-
-    accounts_to_sync = [a for a in config["accounts"] if a["id"]] if not account_id \
-                       else [a for a in config["accounts"] if a["id"]==account_id]
-
-
-
-    results = []; errors = []
-    for account in accounts_to_sync:
-        try:
-            r = sync_account(account, config, DB_PATH); results.append(r)
-            conn = get_db()
-            conn.execute("INSERT INTO import_logs (source,platform,records_imported,notes) VALUES (?,?,?,?)",
-                         ("docusign_api","docusign",r["total"],f"conta:{account['name']}"))
-            conn.commit(); conn.close()
-        except Exception as e:
-            err = str(e); errors.append({"account":account["name"],"error":err})
-            conn = get_db()
-            conn.execute("INSERT INTO docusign_sync_log (account_id,account_name,total,active,pending,synced_at,error) VALUES (?,?,0,0,0,CURRENT_TIMESTAMP,?) ON CONFLICT(account_id) DO UPDATE SET error=excluded.error,synced_at=CURRENT_TIMESTAMP",
-                         (account["id"],account["name"],err))
-            conn.commit(); conn.close()
-    if not results and errors:
-        raise HTTPException(status_code=500, detail=str(errors))
-    return {"synced":results,"errors":errors,"message":f"{len(results)} conta(s) sincronizada(s). {len(errors)} erro(s)."}
 
 @app.get("/docusign/users")
-def docusign_users(account_id: str="", status: str="", search: str=""):
-    conn = get_db(); c = conn.cursor()
-    query = "SELECT email,name,status,account_name,imported_at,raw_json FROM docusign_users WHERE 1=1"
-    params = []
-    if account_id: query+=" AND account_id=?"; params.append(account_id)
-    if status:     query+=" AND status=?"; params.append(status)
-    if search:
-        query+=" AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"
-        params+=[f"%{search.lower()}%",f"%{search.lower()}%"]
-    query+=" ORDER BY account_name,status,email"
-    rows = c.execute(query,params).fetchall(); conn.close()
-    
-    result = []
-    for r in rows:
-        d = dict(r)
-        raw_data = json.loads(d.pop("raw_json") or "{}")
-        # Puxa APENAS o perfil real
-        d["permission_profile"] = raw_data.get("permissionProfileName") or "Sem Perfil"
-        result.append(d)
-    return result
+def docusign_users(account_id: str="", status: str="", search: str="", profile: str=""):
+    conn = get_db()
+    try:
+        query = "SELECT email, name, status, account_name, imported_at, raw_json FROM docusign_users WHERE 1=1"
+        params = []
+        if account_id: query+=" AND account_id=?"; params.append(account_id)
+        if status:     query+=" AND status=?"; params.append(status)
+        if search:
+            query+=" AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"
+            params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
+
+        rows = conn.execute(query, params).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            raw = json.loads(d.pop("raw_json") or "{}")
+            p = raw.get("permissionProfileName", "Sem Perfil")
+            if profile and profile != p: continue
+            d["permission_profile"] = p
+            result.append(d)
+        return result
+    finally:
+        conn.close()
 
 @app.get("/docusign/envelopes")
 def docusign_envelopes(start: str, end: str):
     config = get_config()
-    if not config["integration_key"]: raise HTTPException(status_code=400, detail="DocuSign não configurado.")
-        
     token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
-    results = []; total = 0
+    results = []; grand_total = 0
     conn = get_db()
-    
-    for account in config["accounts"]:
-        if not account["id"]: continue
-        try:
-            data = get_envelopes_count(account, token, start, end)
-            env_dict = {u["email"]: u["count"] for u in data["users"]}
-            
-            db_users = conn.execute("SELECT email, name, raw_json FROM docusign_users WHERE account_id=?", (account["id"],)).fetchall()
-            
-            account_users = []
-            for row in db_users:
-                raw_data = json.loads(row["raw_json"] or "{}")
-                perm = raw_data.get("permissionProfileName") or "Sem Perfil"
-                count = env_dict.get(row["email"], 0) 
-                
-                account_users.append({
-                    "email": row["email"], "name": row["name"], 
-                    "count": count, "permission_profile": perm
-                })
-                
-            results.append({
-                "account_id": account["id"], "account_name": account["name"], 
-                "envelopes_sent": data["total"], "users": account_users
-            })
-            total += data["total"]
-        except Exception as e:
-            results.append({"account_id": account["id"], "account_name": account["name"], "envelopes_sent": 0, "users": []})
-            
-    conn.close()
-    return {"total_sent": total, "accounts": results}
 
-# ─── DEBUG ENDPOINT (remover após resolver) ───────────────────────────────────
-@app.get("/docusign/debug")
-def docusign_debug():
-    """Mostra as configurações carregadas (sem expor credenciais) e testa token."""
-    from docusign_integration import get_config, get_jwt_token
-    config = get_config()
-    result = {"accounts": [], "integration_key_set": bool(config["integration_key"]), "user_id_set": bool(config["user_id"]), "rsa_key_path": config["rsa_key_path"]}
-    
-    import os
-    result["rsa_key_exists"] = os.path.exists(config["rsa_key_path"])
-    
     try:
-        token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
-        result["token_ok"] = True
+        for acc in config["accounts"]:
+            if not acc["id"]: continue
+            db_users = conn.execute("SELECT email, name, raw_json FROM docusign_users WHERE account_id=?", (acc["id"],)).fetchall()
+
+            env_map = {}
+            acc_total = 0
+
+            try:
+                api_data = get_envelopes_count(acc, token, start, end)
+                acc_total = api_data.get("total", 0)
+                
+                for item in api_data.get("users", []):
+                    clean_email = str(item.get("email", "")).lower().strip()
+                    env_map[clean_email] = item.get("count", 0)
+            except Exception as e:
+                print(f"Erro API Envelopes ({acc['name']}): {e}")
+
+            user_list = []
+            for row in db_users:
+                email_db = str(row["email"]).lower().strip()
+                raw = json.loads(row["raw_json"] or "{}")
+                env_count = env_map.get(email_db, 0)
+                
+                user_list.append({
+                    "email": row["email"], 
+                    "name": row["name"], 
+                    "count": env_count, 
+                    "permission_profile": raw.get("permissionProfileName", "Sem Perfil")
+                })
+
+            results.append({"account_id": acc["id"], "account_name": acc["name"], "envelopes_sent": acc_total, "users": user_list})
+            grand_total += acc_total
+
+        return {"total_sent": grand_total, "accounts": results}
+    finally:
+        conn.close()
+
+# ─── GOOGLE WORKSPACE ENDPOINTS ───
+
+@app.post("/google/sync")
+def google_sync():
+    url = os.getenv("GOOGLE_APPS_SCRIPT_URL")
+    if not url: raise HTTPException(status_code=400, detail="URL do Apps Script não configurada")
+        
+    try:
+        resp = requests.get(url, timeout=45)
+        data = resp.json()
+        if not data.get("success"): raise Exception(data.get("error", "Erro na API Google"))
+            
+        users = data.get("users", [])
+        conn = get_db()
+        
+        conn.execute('''CREATE TABLE IF NOT EXISTS google_users (email TEXT PRIMARY KEY, name TEXT, status TEXT, org_unit TEXT, last_login TEXT, imported_at DATETIME DEFAULT (datetime('now', 'localtime')))''')
+        conn.execute("DELETE FROM google_users")
+        conn.execute("DELETE FROM platform_users WHERE platform='google'")
+        
+        count = 0
+        for u in users:
+            email, name, status = u.get("email"), u.get("name"), str(u.get("status")).lower()
+            conn.execute("INSERT INTO google_users (email, name, status, org_unit, last_login) VALUES (?, ?, ?, ?, ?)", (email, name, status, u.get("org_unit"), u.get("last_login", "")))
+            if status == "active" and email:
+                try: conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email.lower(), "google", name)); count += 1
+                except: pass
+                    
+        conn.commit()
+        conn.close()
+        return {"message": f"Google Atualizado! {count} injetados."}
     except Exception as e:
-        result["token_ok"] = False
-        result["token_error"] = str(e)
-        return result
+        raise HTTPException(status_code=500, detail=str(e))
 
-    import requests
-    for account in config["accounts"]:
-        if not account["id"]:
-            continue
-        acc_info = {"name": account["name"], "id": account["id"], "base_uri": account["base_uri"]}
-        try:
-            # Testa buscar só 1 usuário para ver o que retorna
-            url = f"{account['base_uri']}/restapi/v2.1/accounts/{account['id']}/users?count=2&additional_info=true"
-            resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=15)
-            data = resp.json()
-            acc_info["http_status"] = resp.status_code
-            acc_info["total_set_size"] = data.get("totalSetSize", "?")
-            acc_info["result_set_size"] = data.get("resultSetSize", "?")
-            # Mostra os status dos primeiros usuários sem expor dados pessoais
-            users_sample = data.get("users", [])
-            acc_info["sample_statuses"] = [u.get("status") for u in users_sample[:5]]
-            if resp.status_code != 200:
-                acc_info["error"] = data
-        except Exception as e:
-            acc_info["error"] = str(e)
-        result["accounts"].append(acc_info)
-    
-    return result
-
-@app.get("/docusign/debug_user")
-def docusign_debug_user(email: str = ""):
+@app.get("/google/users")
+def google_users(status: str = "", search: str = ""):
     conn = get_db()
-    if email:
-        row = conn.execute("SELECT raw_json FROM docusign_users WHERE email LIKE ? LIMIT 1", (f"%{email}%",)).fetchone()
-    else:
-        row = conn.execute("SELECT raw_json FROM docusign_users LIMIT 1").fetchone()
+    try: conn.execute("SELECT 1 FROM google_users LIMIT 1")
+    except: return []
+        
+    query = "SELECT * FROM google_users WHERE 1=1"
+    params = []
+    if status: query += " AND status = ?"; params.append(status)
+    if search: query += " AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"; params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
+    query += " ORDER BY name ASC"
+    rows = conn.execute(query, params).fetchall()
     conn.close()
-    
-    return json.loads(row["raw_json"]) if row else {"erro": "Nenhum usuario encontrado"}
+    return [dict(r) for r in rows]

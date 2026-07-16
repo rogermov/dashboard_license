@@ -5,8 +5,7 @@ DocuSign JWT Grant Integration
 import os, time, json, requests
 from datetime import datetime
 from typing import Optional
-
-import jwt  # PyJWT
+import jwt  
 
 DS_AUTH_SERVER = "account.docusign.com"
 DS_BASE_URL    = "https://account.docusign.com"
@@ -66,9 +65,7 @@ def get_jwt_token(integration_key: str, user_id: str, rsa_key_path: str) -> str:
     _token_cache[cache_key] = {"token": token, "expires_at": now + data.get("expires_in", 3600)}
     return token
 
-
 def get_users_for_account(account: dict, access_token: str) -> list:
-    """Busca TODOS os usuários da conta com paginação. Filtra ativos/pendentes localmente."""
     base_uri = (account.get("base_uri") or "").rstrip("/")
     account_id = account["id"]
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
@@ -78,24 +75,18 @@ def get_users_for_account(account: dict, access_token: str) -> list:
     page_size = 100
 
     while True:
-        url = (
-            f"{base_uri}/restapi/v2.1/accounts/{account_id}/users"
-            f"?count={page_size}&start_position={start}&additional_info=true"
-        )
+        url = f"{base_uri}/restapi/v2.1/accounts/{account_id}/users?count={page_size}&start_position={start}&additional_info=true"
         resp = requests.get(url, headers=headers, timeout=30)
 
-        if resp.status_code == 401:
-            raise Exception("Token inválido ou sem consentimento para esta conta.")
         if resp.status_code != 200:
             raise Exception(f"Erro DocuSign API ({resp.status_code}): {resp.text[:400]}")
 
         data = resp.json()
         batch = data.get("users", [])
 
-        # Filtra ativos e pendentes localmente
         for u in batch:
             s = (u.get("userStatus") or u.get("status") or "").lower()
-            if s in ("active", "pending", "activationsent", "activationrequired"):
+            if s in ("active", "pending", "activationsent", "activationrequired", "created", "closed"):
                 all_users.append(u)
 
         total = int(data.get("totalSetSize", 0))
@@ -104,57 +95,6 @@ def get_users_for_account(account: dict, access_token: str) -> list:
             break
 
     return all_users
-
-
-def sync_account(account: dict, config: dict, db_path: str) -> dict:
-    import sqlite3
-    token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
-    raw_users = get_users_for_account(account, token)
-
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("DELETE FROM docusign_users WHERE account_id = ?", (account["id"],))
-
-    active = pending = 0
-    for u in raw_users:
-        email = (u.get("email") or "").strip().lower()
-        if not email:
-            continue
-        s = (u.get("userStatus") or u.get("status") or "").lower()
-        if s == "active":
-            active += 1
-        else:
-            pending += 1
-            s = "pending"
-
-        conn.execute("""
-            INSERT INTO docusign_users (email, name, status, account_id, account_name, user_id_ds, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (email, u.get("userName") or u.get("name") or "", s,
-              account["id"], account["name"], u.get("userId") or "", json.dumps(u)))
-
-        conn.execute("""
-            INSERT INTO platform_users (email, platform, display_name)
-            VALUES (?, 'docusign', ?)
-            ON CONFLICT(email, platform) DO UPDATE SET
-                display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP
-        """, (email, u.get("userName") or ""))
-
-    conn.execute("""
-        INSERT INTO docusign_sync_log (account_id, account_name, total, active, pending, synced_at, error)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, NULL)
-        ON CONFLICT(account_id) DO UPDATE SET
-            total=excluded.total, active=excluded.active, pending=excluded.pending,
-            synced_at=CURRENT_TIMESTAMP, error=NULL
-    """, (account["id"], account["name"], len(raw_users), active, pending))
-
-    conn.commit()
-    conn.close()
-
-    return {"account_id": account["id"], "account_name": account["name"],
-            "total": len(raw_users), "active": active, "pending": pending,
-            "synced_at": datetime.now().isoformat()}
-
 
 def generate_consent_url(integration_key: str) -> str:
     return (
@@ -165,43 +105,37 @@ def generate_consent_url(integration_key: str) -> str:
     )
 
 def get_envelopes_count(account: dict, access_token: str, start_date: str, end_date: str) -> dict:
-    """Busca o total de envelopes e agrupa a quantidade de envios por usuário"""
     base_uri = (account.get("base_uri") or "").rstrip("/")
     account_id = account["id"]
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+
+    sd = start_date.split("T")[0]
+    ed = end_date.split("T")[0]
     
-    # 1. Removi o count=1000 que pode estar bloqueando a API
-    url = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={start_date}T00:00:00Z&to_date={end_date}T23:59:59Z&user_filter=all"
-    
+    url = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={sd}T00:00:00Z&to_date={ed}T23:59:59Z&user_filter=all"
     resp = requests.get(url, headers=headers, timeout=20)
     
-    # 2. Radar de erros e Plano B
+    error_msg = None
     if resp.status_code != 200:
-        print(f"\n[ERRO DOCUSIGN - {account['name']}] Status {resp.status_code}: {resp.text}\n")
-        
-        # Se a DocuSign recusou por causa do user_filter=all, tentamos sem ele
-        url_fallback = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={start_date}T00:00:00Z&to_date={end_date}T23:59:59Z"
+        url_fallback = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={sd}T00:00:00Z&to_date={ed}T23:59:59Z"
         resp = requests.get(url_fallback, headers=headers, timeout=20)
-        
         if resp.status_code != 200:
-            return {"total": 0, "users": []}
-            
+            error_msg = resp.text
+            return {"total": 0, "users": [], "error": error_msg}
+
     data = resp.json()
     total = int(data.get("totalSetSize", 0))
     envelopes = data.get("envelopes", [])
-    
+
     user_counts = {}
     for env in envelopes:
         sender = env.get("sender", {})
-        email = (sender.get("email") or "Desconhecido").lower()
+        email = (sender.get("email") or "Desconhecido").lower().strip()
         name = sender.get("userName") or "Desconhecido"
-        
+
         if email not in user_counts:
             user_counts[email] = {"name": name, "email": email, "count": 0}
         user_counts[email]["count"] += 1
-        
-    # Ordena para quem enviou mais envelopes aparecer no topo
-    users_list = sorted(list(user_counts.values()), key=lambda x: x["count"], reverse=True)
-    
-    return {"total": total, "users": users_list}
 
+    users_list = sorted(list(user_counts.values()), key=lambda x: x["count"], reverse=True)
+    return {"total": total, "users": users_list, "error": None}

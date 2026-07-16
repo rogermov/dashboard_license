@@ -175,6 +175,17 @@ def get_all_terminated(search: str=""):
         rows = c.execute("SELECT * FROM terminated_users ORDER BY imported_at DESC").fetchall()
     conn.close(); return [dict(r) for r in rows]
 
+@app.delete("/users/terminated/clear")
+def clear_terminated_users():
+    conn = get_db()
+    try:
+        # Apaga APENAS a tabela de desligados, mantendo o resto intacto
+        conn.execute("DELETE FROM terminated_users")
+        conn.commit()
+        return {"message": "Lista de desligados limpa com sucesso!"}
+    finally:
+        conn.close()
+
 @app.get("/licenses/by-domain")
 def licenses_by_domain():
     conn = get_db(); c = conn.cursor()

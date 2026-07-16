@@ -22,11 +22,36 @@ export default function Dashboard(){
   const[stats,setStats]=useState(null);const[risk,setRisk]=useState([]);const[loading,setLoading]=useState(true);
   const load=async()=>{setLoading(true);try{const[s,r]=await Promise.all([api.get('/stats',{noCache:true}),api.get('/users/risk',{noCache:true})]);setStats(s);setRisk(r.slice(0,10));}catch(e){console.error(e);}finally{setLoading(false);}};
   useEffect(()=>{load();},[]);
+const handleClearTerminated = async () => {
+    if (!window.confirm("Tem certeza que deseja limpar a lista de desligados? As contas nas plataformas não serão afetadas.")) return;
+    try {
+      // Pega o IP exato que você está usando no navegador automaticamente
+      const baseUrl = `http://${window.location.hostname}:8000`;
+      
+      const res = await fetch(`${baseUrl}/users/terminated/clear`, { method: "DELETE" });
+      if (res.ok) {
+        alert("Lista limpa com sucesso!");
+        load(); // Atualiza os gráficos na hora
+      } else {
+        alert("Erro ao limpar. O backend não respondeu OK.");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Erro ao conectar com a API.");
+    }
+  };  
   const chartData=Object.entries(stats?.exposure_by_platform||{}).map(([k,v])=>({name:PL[k]||k,key:k,value:v})).sort((a,b)=>b.value-a.value);
   return(<div style={{animation:'fadeIn 0.3s ease'}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1.75rem'}}>
       <div><h1 style={{fontWeight:700,fontSize:'1.5rem',color:'var(--text)'}}>Dashboard</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Visão geral de acessos de usuários desligados</p></div>
-      <button onClick={load} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.5rem 1rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text2)',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)'}}><RefreshCw size={13}/>Atualizar</button>
+      <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <button onClick={handleClearTerminated} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.5rem 1rem',background:'var(--red)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)', cursor:'pointer'}}>
+          Limpar Desligados
+        </button>
+        <button onClick={load} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.5rem 1rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text2)',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)', cursor:'pointer'}}>
+          <RefreshCw size={13}/>Atualizar
+        </button>
+      </div>
     </div>
     <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem',marginBottom:'1.5rem'}}>
       <StatCard label="Desligados na base" icon={Users} loading={loading} value={stats?.total_terminated??0} sub="total importado do RH" color="var(--blue-500)"/>

@@ -1,13 +1,14 @@
 import React from 'react';
-import { LayoutDashboard, Upload, Users, BarChart2, Shield, FileSignature, Chrome } from 'lucide-react';
+import { LayoutDashboard, Upload, Users, BarChart2, Shield, FileSignature, Chrome, Building2 } from 'lucide-react';
 
 const nav = [
-  { id:'dashboard', label:'Dashboard', icon:LayoutDashboard },
-  { id:'licenses',  label:'Licenças',  icon:BarChart2 },
-  { id:'docusign',  label:'DocuSign',  icon:FileSignature },
-  { id:'google',    label:'Google',    icon:Chrome }, 
-  { id:'import',    label:'Importar',  icon:Upload },
-  { id:'users',     label:'Usuários',  icon:Users },
+  { id:'dashboard',    label:'Dashboard',      icon:LayoutDashboard },
+  { id:'licenses',     label:'Licenças',       icon:BarChart2 },
+  { id:'docusign',     label:'DocuSign',       icon:FileSignature },
+  { id:'google',       label:'Google',         icon:Chrome },
+  { id:'microsoft365', label:'Microsoft 365',  icon:Building2 },
+  { id:'import',       label:'Importar',       icon:Upload },
+  { id:'users',        label:'Usuários',       icon:Users },
 ];
 
 export default function Sidebar({ current, onChange }) {

@@ -1,10 +1,9 @@
 import React,{useState,useRef} from 'react';
-import {Upload,Link,CheckCircle,XCircle,Loader,Info,RefreshCw,Chrome,FileSignature} from 'lucide-react';
+import {Upload,Link,CheckCircle,XCircle,Loader,Info,RefreshCw,Chrome,FileSignature,Building2} from 'lucide-react';
 import {api} from '../hooks/api.js';
 
-// Removemos Google e DocuSign daqui porque agora eles têm botões automáticos via API!
+// Removemos Google, DocuSign e Microsoft 365 daqui porque agora eles têm botões automáticos via API!
 const PLATFORMS=[
-  {id:'365',label:'Microsoft 365',color:'#1e5fad',hint:'Admin Center → Usuários → Exportar'},
   {id:'lucid',label:'Lucid',color:'#d97706',hint:'Admin → Usuários → Export'},
   {id:'bitbucket',label:'Bitbucket',color:'#059669',hint:'Settings → User management → Export'},
   {id:'jira',label:'Jira',color:'#0284c7',hint:'Admin → User management → Export users'},
@@ -84,9 +83,10 @@ export default function Import(){
     <Card><Step n="3" title="Sincronização de Plataformas"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1.25rem',lineHeight:1.7}}>Atualize os dados para cruzar os acessos ativos com os desligados. Cada sincronização substitui os dados anteriores.</p>
       
       {/* Botões de API Automática (Sem CSV!) */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'1rem', marginBottom: '1rem'}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem', marginBottom: '1rem'}}>
         <ApiSyncBtn label="Sincronizar Google" icon={Chrome} endpoint="/google/sync" color="#dc2626" onSuccess={r=>showToast(r.message,true)} />
         <ApiSyncBtn label="Sincronizar DocuSign" icon={FileSignature} endpoint="/docusign/sync" color="#7c3aed" onSuccess={r=>showToast(r.message,true)} />
+        <ApiSyncBtn label="Sincronizar Microsoft 365" icon={Building2} endpoint="/microsoft365/sync" color="#1e5fad" onSuccess={r=>showToast(r.message,true)} />
       </div>
 
       <hr style={{ border: 'none', borderTop: '1px dashed var(--border)', margin: '1.5rem 0' }} />

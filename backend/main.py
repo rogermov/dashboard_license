@@ -3,9 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import sqlite3, pandas as pd, requests, io, re, os, unicodedata, json
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
+
+def to_brt(utc_str):
+    if not utc_str: return utc_str
+    try:
+        dt = datetime.strptime(utc_str[:19], "%Y-%m-%d %H:%M:%S") - timedelta(hours=3)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return utc_str
 
 from docusign_integration import get_config, get_jwt_token, get_users_for_account, get_envelopes_count, generate_consent_url
+from graph_integration import get_config as get_graph_config, get_graph_token, get_users as get_graph_users, get_subscribed_skus, sku_friendly_name
 
 load_dotenv()
 
@@ -69,6 +78,14 @@ def init_db():
         account_id TEXT PRIMARY KEY, account_name TEXT,
         total INTEGER DEFAULT 0, active INTEGER DEFAULT 0, pending INTEGER DEFAULT 0,
         synced_at TEXT, error TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ms365_users (
+        email TEXT PRIMARY KEY, name TEXT, upn TEXT, account_enabled INTEGER,
+        licenses TEXT, imported_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ms365_licenses (
+        sku_id TEXT PRIMARY KEY, sku_part_number TEXT, friendly_name TEXT,
+        total INTEGER DEFAULT 0, consumed INTEGER DEFAULT 0, synced_at TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ms365_sync_log (
+        id INTEGER PRIMARY KEY CHECK (id=1), synced_at TEXT, error TEXT)""")
 
     for sql in [
         "CREATE INDEX IF NOT EXISTS idx_terminated_email ON terminated_users(email)",
@@ -89,6 +106,16 @@ def init_db():
 
 init_db()
 
+# Palavras que identificam uma licen\u00e7a 365 como GRATUITA ou TESTE (n\u00e3o conta como licen\u00e7a paga)
+FREE_LICENSE_KEYWORDS = ['viral', 'exploratory', 'free', 'standard', 'dev', 'stream', 'spza', 'trial', 'adhoc', 'unlicensed']
+
+def has_paid_license(license_names: list) -> bool:
+    for l in license_names:
+        l_clean = str(l).strip().lower()
+        if l_clean and not any(k in l_clean for k in FREE_LICENSE_KEYWORDS):
+            return True
+    return False
+
 def normalize_email(email: str) -> str:
     return str(email).strip().lower().replace("\ufeff","") if email else ""
 
@@ -99,18 +126,29 @@ def normalize_str(s: str) -> str:
 
 def find_column(cols, hints):
     cols_norm = [normalize_str(c) for c in cols]
+    
+    # 1. Primeiro tenta achar a coluna com o nome EXATO
     for hint in hints:
         hn = normalize_str(hint)
         for i, cn in enumerate(cols_norm):
-            if hn == cn or hn in cn or cn in hn:
+            if hn == cn:
                 return cols[i]
+                
+    # 2. Se não achar exato, tenta achar por aproximação (substring)
+    for hint in hints:
+        hn = normalize_str(hint)
+        for i, cn in enumerate(cols_norm):
+            if hn in cn or cn in hn:
+                return cols[i]
+                
     return None
 
 def read_csv_flexible(content: bytes) -> pd.DataFrame:
     for kwargs in [
         {"encoding":"utf-8-sig","sep":","}, {"encoding":"utf-8","sep":","},
-        {"encoding":"latin1","sep":","}, {"encoding":"utf-8-sig","sep":";"},
-        {"encoding":"utf-8","sep":";"}, {"encoding":"latin1","sep":";"},
+        {"encoding":"latin1","sep":","}, {"encoding":"utf-16","sep":","},
+        {"encoding":"utf-8-sig","sep":";"}, {"encoding":"utf-8","sep":";"},
+        {"encoding":"latin1","sep":";"}, {"encoding":"utf-16","sep":";"},
     ]:
         try:
             df = pd.read_csv(io.BytesIO(content), **kwargs)
@@ -207,22 +245,54 @@ def licenses_by_domain():
 async def import_platform_csv(platform: str=Form(...), file: UploadFile=File(...)):
     if platform not in PLATFORMS: raise HTTPException(status_code=400, detail=f"Plataforma inválida: {PLATFORMS}")
     content = await file.read(); df = read_csv_flexible(content)
+    
     hints = EMAIL_COLUMN_HINTS.get(platform,[]) + EMAIL_COLUMN_HINTS["default"]
     email_col = find_column(list(df.columns), hints) or df.columns[0]
     name_col  = find_column(list(df.columns), NAME_COLUMN_HINTS)
+    
+    # ─── NOVIDADE: IDENTIFICA A COLUNA DE LICENÇAS NO 365 ───
+    lic_col = None
+    if platform == "365":
+        lic_col = find_column(list(df.columns), ["licenca", "licença", "licenses", "licencasnomes", "assigned licenses"])
+        
     conn = get_db(); c = conn.cursor()
     c.execute("DELETE FROM platform_users WHERE platform=?", (platform,))
     count = skipped = 0
+
     for _, row in df.iterrows():
         email = normalize_email(row.get(email_col,""))
-        if not email or "@" not in email: skipped+=1; continue
+        if not email or "@" not in email:
+            skipped+=1
+            continue
+
+        # REGRA DO 365: Só entra se tiver ao menos UMA licença paga
+        if platform == "365" and lic_col:
+            raw_lic = str(row.get(lic_col, ""))
+            if not raw_lic or raw_lic.strip().lower() == "nan":
+                skipped += 1
+                continue
+
+            lics = re.split(r'[;,]', raw_lic)
+            if not has_paid_license(lics):
+                skipped += 1 # O usuário só tem tranqueira gratuita, é ignorado!
+                continue
+
         display_name = str(row.get(name_col,"")) if name_col else None
         try:
-            c.execute("INSERT INTO platform_users (email,platform,display_name) VALUES (?,?,?) ON CONFLICT(email,platform) DO UPDATE SET display_name=excluded.display_name,imported_at=CURRENT_TIMESTAMP", (email,platform,display_name)); count+=1
-        except Exception as e: skipped+=1; print(f"INSERT ERROR: {e} | {email}")
-    c.execute("INSERT INTO import_logs (source,platform,records_imported,notes) VALUES (?,?,?,?)", ("csv_upload",platform,count,f"coluna={email_col},pulados={skipped}"))
+            c.execute("INSERT INTO platform_users (email,platform,display_name) VALUES (?,?,?) ON CONFLICT(email,platform) DO UPDATE SET display_name=excluded.display_name,imported_at=CURRENT_TIMESTAMP", (email,platform,display_name))
+            count+=1
+        except Exception as e: 
+            skipped+=1
+            print(f"INSERT ERROR: {e} | {email}")
+            
+    c.execute("INSERT INTO import_logs (source,platform,records_imported,notes) VALUES (?,?,?,?)", ("csv_upload",platform,count,f"col_email={email_col},col_lic={lic_col},pulados={skipped}"))
     conn.commit(); conn.close()
-    return {"imported":count,"skipped":skipped,"email_column_used":email_col,"platform":platform,"message":f"{count} usuários importados."}
+    
+    msg = f"{count} usuários importados."
+    if platform == "365":
+        msg = f"{count} usuários com licenças PAGAS importados com sucesso! ({skipped} gratuitos/sem licença ignorados)."
+        
+    return {"imported":count,"skipped":skipped,"email_column_used":email_col,"platform":platform,"message":msg}
 
 @app.post("/import/azure/csv")
 async def import_azure_csv(file: UploadFile=File(...)):
@@ -303,7 +373,7 @@ async def preview_csv(file: UploadFile=File(...), platform: str=Form(default="36
 @app.delete("/data/reset")
 def reset_all():
     conn = get_db(); c = conn.cursor()
-    for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log"]:
+    for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log","ms365_users","ms365_licenses","ms365_sync_log"]:
         c.execute(f"DELETE FROM {t}")
     conn.commit(); conn.close()
     return {"message":"Banco limpo."}
@@ -320,7 +390,7 @@ def docusign_status():
         counts = {r["status"]:r["cnt"] for r in c.execute("SELECT status, COUNT(*) as cnt FROM docusign_users WHERE account_id=? GROUP BY status", (account["id"],)).fetchall()}
         result.append({
             "account_id": account["id"], "account_name": account["name"], "configured": bool(account["id"]),
-            "last_sync": log["synced_at"] if log else None, "last_error": log["error"] if log else None,
+            "last_sync": to_brt(log["synced_at"]) if log else None, "last_error": log["error"] if log else None,
             "active": counts.get("active",0), "pending": counts.get("pending",0), "total": sum(counts.values()),
         })
     conn.close()
@@ -368,10 +438,11 @@ def docusign_sync(account_id: str = ""):
 
                     total_proc += 1
 
-                conn.execute("INSERT INTO docusign_sync_log (account_id, account_name, synced_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(account_id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP", (acc["id"], acc["name"]))
+                conn.execute("INSERT INTO docusign_sync_log (account_id, account_name, synced_at, error) VALUES (?, ?, CURRENT_TIMESTAMP, NULL) ON CONFLICT(account_id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL", (acc["id"], acc["name"]))
 
             except Exception as e:
                 print(f"Erro na conta {acc['name']}: {e}")
+                conn.execute("INSERT INTO docusign_sync_log (account_id, account_name, error) VALUES (?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET error=?", (acc["id"], acc["name"], str(e), str(e)))
 
         conn.commit()
         return {"message": f"Sincronização Finalizada! {total_proc} usuários atualizados."}
@@ -398,6 +469,7 @@ def docusign_users(account_id: str="", status: str="", search: str="", profile: 
             p = raw.get("permissionProfileName", "Sem Perfil")
             if profile and profile != p: continue
             d["permission_profile"] = p
+            d["imported_at"] = to_brt(d["imported_at"])
             result.append(d)
         return result
     finally:
@@ -421,7 +493,10 @@ def docusign_envelopes(start: str, end: str):
             try:
                 api_data = get_envelopes_count(acc, token, start, end)
                 acc_total = api_data.get("total", 0)
-                
+
+                if api_data.get("error"):
+                    print(f"Erro API Envelopes ({acc['name']}): {api_data['error']}")
+
                 for item in api_data.get("users", []):
                     clean_email = str(item.get("email", "")).lower().strip()
                     env_map[clean_email] = item.get("count", 0)
@@ -495,3 +570,98 @@ def google_users(status: str = "", search: str = ""):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+# ─── MICROSOFT 365 / ENTRA ID ENDPOINTS ───────────────────────────────────────
+
+@app.get("/microsoft365/status")
+def microsoft365_status():
+    conn = get_db(); c = conn.cursor()
+    log = c.execute("SELECT * FROM ms365_sync_log WHERE id=1").fetchone()
+    active = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=1").fetchone()[0]
+    disabled = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=0").fetchone()[0]
+    conn.close()
+    return {
+        "last_sync": to_brt(log["synced_at"]) if log else None,
+        "last_error": log["error"] if log else None,
+        "active": active, "disabled": disabled, "total": active + disabled,
+        "configured": bool(get_graph_config()["tenant_id"]),
+    }
+
+@app.get("/microsoft365/licenses")
+def microsoft365_licenses():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM ms365_licenses ORDER BY total DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.get("/microsoft365/users")
+def microsoft365_users(status: str = "", search: str = "", license: str = ""):
+    conn = get_db()
+    query = "SELECT * FROM ms365_users WHERE 1=1"
+    params = []
+    if status: query += " AND account_enabled=?"; params.append(1 if status == "active" else 0)
+    if search: query += " AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"; params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
+    if license: query += " AND licenses LIKE ?"; params.append(f"%{license}%")
+    query += " ORDER BY name ASC"
+    # Tenant tem ~47k contas (a maioria sem licença); sem busca/filtro, limita para não travar a tabela no navegador
+    if not search and not status and not license: query += " LIMIT 500"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.post("/microsoft365/sync")
+def microsoft365_sync():
+    config = get_graph_config()
+    if not config["tenant_id"] or not config["client_id"] or not config["client_secret"]:
+        raise HTTPException(status_code=400, detail="Credenciais do Microsoft Graph não configuradas no .env")
+
+    conn = get_db()
+    try:
+        token = get_graph_token(config["tenant_id"], config["client_id"], config["client_secret"])
+        skus = get_subscribed_skus(token)
+        sku_part_by_id = {s["skuId"]: s["skuPartNumber"] for s in skus}
+
+        users = get_graph_users(token)
+
+        conn.execute("DELETE FROM ms365_users")
+        conn.execute("DELETE FROM platform_users WHERE platform='365'")
+
+        count = 0
+        for u in users:
+            email = normalize_email(u.get("mail") or u.get("userPrincipalName") or "")
+            if not email: continue
+            name = u.get("displayName") or ""
+            enabled = 1 if u.get("accountEnabled") else 0
+            part_numbers = [sku_part_by_id.get(a["skuId"], a["skuId"]) for a in (u.get("assignedLicenses") or [])]
+            friendly = [sku_friendly_name(p) for p in part_numbers]
+
+            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
+                licenses=excluded.licenses, imported_at=CURRENT_TIMESTAMP""",
+                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly)))
+
+            if enabled and has_paid_license(part_numbers):
+                conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
+                    ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP""",
+                    (email, name))
+                count += 1
+
+        conn.execute("DELETE FROM ms365_licenses")
+        for s in skus:
+            part_number = s["skuPartNumber"]
+            conn.execute("""INSERT INTO ms365_licenses (sku_id, sku_part_number, friendly_name, total, consumed, synced_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (s["skuId"], part_number, sku_friendly_name(part_number),
+                 s.get("prepaidUnits", {}).get("enabled", 0), s.get("consumedUnits", 0)))
+
+        conn.execute("""INSERT INTO ms365_sync_log (id, synced_at, error) VALUES (1, CURRENT_TIMESTAMP, NULL)
+            ON CONFLICT(id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL""")
+        conn.commit()
+        return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga."}
+    except Exception as e:
+        conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
+            ON CONFLICT(id) DO UPDATE SET error=?""", (str(e), str(e)))
+        conn.commit()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()

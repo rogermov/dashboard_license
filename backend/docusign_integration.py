@@ -112,16 +112,11 @@ def get_envelopes_count(account: dict, access_token: str, start_date: str, end_d
     sd = start_date.split("T")[0]
     ed = end_date.split("T")[0]
     
-    url = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={sd}T00:00:00Z&to_date={ed}T23:59:59Z&user_filter=all"
+    url = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={sd}T00:00:00Z&to_date={ed}T23:59:59Z"
     resp = requests.get(url, headers=headers, timeout=20)
-    
-    error_msg = None
+
     if resp.status_code != 200:
-        url_fallback = f"{base_uri}/restapi/v2.1/accounts/{account_id}/envelopes?from_date={sd}T00:00:00Z&to_date={ed}T23:59:59Z"
-        resp = requests.get(url_fallback, headers=headers, timeout=20)
-        if resp.status_code != 200:
-            error_msg = resp.text
-            return {"total": 0, "users": [], "error": error_msg}
+        return {"total": 0, "users": [], "error": resp.text}
 
     data = resp.json()
     total = int(data.get("totalSetSize", 0))

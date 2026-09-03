@@ -1,0 +1,13 @@
+# Copie este arquivo para terraform.tfvars e preencha.
+# terraform.tfvars NÃO deve ir para o git (já está no .gitignore desta pasta).
+
+alert_email = "rogerio.conceicao@comporte.com.br"
+
+# Os valores abaixo já vêm com um default sensato (ver variables.tf) — só
+# descomente e mude se quiser algo diferente.
+
+# aws_region       = "us-east-1"
+# instance_type    = "t3.micro"
+# root_volume_size = 16
+# ssh_cidr         = "0.0.0.0/0"
+# budget_limit_usd = 10

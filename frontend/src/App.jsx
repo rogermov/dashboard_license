@@ -5,6 +5,7 @@ import Users from './pages/Users.jsx';
 import Licenses from './pages/Licenses.jsx';
 import Docusign from './pages/Docusign.jsx';
 import Google from './pages/Google.jsx';
+import Microsoft365 from './pages/Microsoft365.jsx';
 import Sidebar from './components/Sidebar.jsx';
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
         <div style={{ display: page === 'licenses' ? 'block' : 'none' }}><Licenses /></div>
         <div style={{ display: page === 'docusign' ? 'block' : 'none' }}><Docusign /></div>
         <div style={{ display: page === 'google' ? 'block' : 'none' }}><Google /></div>
+        <div style={{ display: page === 'microsoft365' ? 'block' : 'none' }}><Microsoft365 /></div>
         <div style={{ display: page === 'import' ? 'block' : 'none' }}><Import /></div>
         <div style={{ display: page === 'users' ? 'block' : 'none' }}><Users /></div>
       </main>

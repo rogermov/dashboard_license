@@ -1,0 +1,38 @@
+# Compose de produção para a instância EC2. Diferenças do docker-compose.yml original:
+#   - frontend na porta 80 (a que o Security Group libera), não 3000
+#   - backend NÃO expõe porta pro host (só é acessível via proxy /api do nginx,
+#     internamente na rede docker — reduz superfície exposta)
+#   - banco em bind mount (./data) em vez de volume nomeado do Docker, pra
+#     facilitar backup (basta copiar o arquivo) e a migração inicial (rsync)
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: accessguard-api
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+      - ./secrets:/secrets:ro
+    env_file:
+      - .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    networks:
+      - accessguard
+
+  frontend:
+    build: ./frontend
+    container_name: accessguard-web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - accessguard
+
+networks:
+  accessguard:
+    driver: bridge

@@ -28,6 +28,8 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    volumes:
+      - ./frontend/.htpasswd:/etc/nginx/.htpasswd:ro
     depends_on:
       - backend
     networks:

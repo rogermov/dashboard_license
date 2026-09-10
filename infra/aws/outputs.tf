@@ -30,3 +30,8 @@ output "instance_id" {
 output "aws_region" {
   value = var.aws_region
 }
+
+output "sns_alerts_topic_arn" {
+  description = "ARN do tópico usado tanto pro orçamento quanto pros alertas de brute-force do fail2ban."
+  value       = aws_sns_topic.budget_alerts.arn
+}

@@ -43,4 +43,15 @@ resource "aws_instance" "app" {
   tags = {
     Name = "${var.project_name}-server"
   }
+
+  # data.aws_ami.ubuntu usa most_recent = true — sem isso, todo "terraform
+  # plan" recalcula a AMI mais nova do momento e, como a AMI é imutável na
+  # instância, isso força recriar o servidor inteiro (perde dado, troca IP
+  # até o EIP reassociar) só por causa de um patch novo da Canonical, sem
+  # nenhuma mudança real pretendida. Pra atualizar a AMI de propósito algum
+  # dia, faça isso deliberadamente (removendo o ignore_changes por uma
+  # rodada, com backup/migração planejados) — nunca como efeito colateral.
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }

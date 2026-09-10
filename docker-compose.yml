@@ -26,6 +26,7 @@ services:
       - "3000:80"
     volumes:
       - ./frontend/.htpasswd:/etc/nginx/.htpasswd:ro
+      - ./logs/nginx:/var/log/nginx
     depends_on:
       - backend
     networks:

@@ -45,6 +45,12 @@ ssh $SSH_OPTS ubuntu@"$IP" 'chmod +x /opt/accessguard/backup_to_s3.sh'
 echo "==> Subindo os containers (build)..."
 ssh $SSH_OPTS ubuntu@"$IP" 'cd /opt/accessguard && docker compose -f docker-compose.aws.yml up -d --build'
 
+echo "==> Configurando fail2ban para o login (brute-force)..."
+SNS_ARN=$(terraform output -raw sns_alerts_topic_arn)
+sed -e "s#__SNS_TOPIC_ARN__#$SNS_ARN#" -e "s/__AWS_REGION__/$REGION/" setup_fail2ban.sh.tpl > /tmp/setup_fail2ban.sh
+scp $SSH_OPTS /tmp/setup_fail2ban.sh ubuntu@"$IP":/tmp/setup_fail2ban.sh
+ssh $SSH_OPTS ubuntu@"$IP" 'bash /tmp/setup_fail2ban.sh && rm /tmp/setup_fail2ban.sh'
+
 echo
 echo "Pronto! http://$IP"
 echo "SSH: ssh -i $KEY ubuntu@$IP"

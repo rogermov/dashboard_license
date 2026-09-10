@@ -13,6 +13,8 @@ PROJECT_ROOT="$(cd ../.. && pwd)"
 
 IP=$(terraform output -raw public_ip)
 KEY=$(terraform output -raw private_key_path)
+SNS_ARN=$(terraform output -raw sns_alerts_topic_arn)
+REGION=$(terraform output -raw aws_region)
 SSH_OPTS="-i $KEY -o StrictHostKeyChecking=accept-new"
 
 echo "==> Enviando código atualizado para $IP (sem tocar em .env/secrets/data)..."
@@ -24,5 +26,10 @@ tar czf - -C "$PROJECT_ROOT" \
 
 echo "==> Rebuild e reinício dos containers..."
 ssh $SSH_OPTS ubuntu@"$IP" 'cd /opt/accessguard && docker compose -f docker-compose.aws.yml up -d --build'
+
+echo "==> Garantindo config do fail2ban (brute-force do login) em dia..."
+sed -e "s#__SNS_TOPIC_ARN__#$SNS_ARN#" -e "s/__AWS_REGION__/$REGION/" setup_fail2ban.sh.tpl > /tmp/setup_fail2ban.sh
+scp $SSH_OPTS /tmp/setup_fail2ban.sh ubuntu@"$IP":/tmp/setup_fail2ban.sh
+ssh $SSH_OPTS ubuntu@"$IP" 'bash /tmp/setup_fail2ban.sh && rm /tmp/setup_fail2ban.sh'
 
 echo "Deploy concluído: http://$IP"

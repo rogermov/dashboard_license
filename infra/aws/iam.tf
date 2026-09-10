@@ -35,6 +35,23 @@ resource "aws_iam_role_policy" "backup_access" {
   policy = data.aws_iam_policy_document.backup_access.json
 }
 
+# Permite só publicar no tópico de alertas já existente (o mesmo do orçamento)
+# — usado pelo fail2ban pra avisar por e-mail quando bane um IP por brute-force
+# no login. Nenhuma outra permissão de SNS (não lista, não assina, não cria).
+data "aws_iam_policy_document" "sns_publish" {
+  statement {
+    sid       = "PublishBanAlerts"
+    actions   = ["sns:Publish"]
+    resources = [aws_sns_topic.budget_alerts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "sns_publish" {
+  name   = "${var.project_name}-sns-publish-alerts"
+  role   = aws_iam_role.ec2.id
+  policy = data.aws_iam_policy_document.sns_publish.json
+}
+
 resource "aws_iam_instance_profile" "ec2" {
   name = "${var.project_name}-ec2-profile"
   role = aws_iam_role.ec2.name

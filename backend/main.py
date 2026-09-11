@@ -51,6 +51,12 @@ def get_db():
     conn.execute("PRAGMA cache_size=-32000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=MEMORY")
+    # Backend roda com 2 workers (processos separados) e alguns syncs (M365,
+    # Google) fazem milhares de INSERTs numa transação só. Sem isso, qualquer
+    # escrita concorrente de outro worker falhava quase na hora com "database
+    # is locked" (o driver padrão só espera ~5s) — agora espera até 30s antes
+    # de desistir, o que cobre a folga real que os syncs grandes precisam.
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 def init_db():
@@ -653,13 +659,15 @@ def google_sync():
         conn.execute("DELETE FROM platform_users WHERE platform='google'")
         
         count = 0
-        for u in users:
+        for i, u in enumerate(users, start=1):
             email, name, status = u.get("email"), u.get("name"), str(u.get("status")).lower()
             conn.execute("INSERT INTO google_users (email, name, status, org_unit, last_login) VALUES (?, ?, ?, ?, ?)", (email, name, status, u.get("org_unit"), u.get("last_login", "")))
             if status == "active" and email:
                 try: conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email.lower(), "google", name)); count += 1
                 except: pass
-                    
+            if i % 500 == 0:  # ver comentário equivalente no sync do M365
+                conn.commit()
+
         conn.commit()
         conn.close()
         return {"message": f"Google Atualizado! {count} injetados."}
@@ -737,7 +745,7 @@ def microsoft365_sync():
         conn.execute("DELETE FROM platform_users WHERE platform='365'")
 
         count = 0
-        for u in users:
+        for i, u in enumerate(users, start=1):
             email = normalize_email(u.get("mail") or u.get("userPrincipalName") or "")
             if not email: continue
             name = u.get("displayName") or ""
@@ -755,6 +763,13 @@ def microsoft365_sync():
                     ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP""",
                     (email, name))
                 count += 1
+
+            # Commita em lotes (tenant tem ~48 mil contas) — sem isso, a
+            # transação inteira ficava aberta do início ao fim, segurando o
+            # lock de escrita por muito tempo e derrubando qualquer outro
+            # sync (Google, DocuSign) que tentasse escrever nesse meio-tempo.
+            if i % 500 == 0:
+                conn.commit()
 
         conn.execute("DELETE FROM ms365_licenses")
         for s in skus:

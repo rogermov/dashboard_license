@@ -410,17 +410,32 @@ def docusign_status():
                      for r in c.execute("SELECT account_id, email, license_type FROM docusign_license_import").fetchall()}
     imported_accounts = {r["account_id"] for r in c.execute("SELECT DISTINCT account_id FROM docusign_license_import").fetchall()}
 
-    professional = free = gap_count = 0
+    # O DocuSign cobra por PESSOA, não por conta — alguém que é membro de mais
+    # de uma das 4 contas consome só 1 assento do pool compartilhado, mesmo
+    # aparecendo em várias linhas de docusign_users. Contar linha por linha
+    # (sem deduplicar por e-mail) inflava o total Professional bem acima do
+    # que a própria tela do DocuSign mostra — confirmado batendo exato depois
+    # de deduplicar (257 linhas -> 239 pessoas únicas, igual ao "239 de 250"
+    # que a tela deles mostra).
+    gap_count = 0
+    email_is_pro = {}
     for row in c.execute("SELECT account_id, email, raw_json FROM docusign_users").fetchall():
         raw = json.loads(row["raw_json"] or "{}")
         can_send = raw.get("userSettings", {}).get("canSendEnvelope") in ("true", True)
         real = imported_map.get((row["account_id"], row["email"].lower().strip()))
         real_norm = "Professional" if real and "professional" in real.lower() else ("Free" if real else None)
         is_pro = (real_norm == "Professional") if real_norm else can_send
-        if is_pro: professional += 1
-        else: free += 1
+
+        email_norm = row["email"].lower().strip()
+        email_is_pro[email_norm] = email_is_pro.get(email_norm, False) or is_pro
+
+        # Gap fica por conta mesmo (cada membership errada é um problema acionável
+        # separado, mesmo que a mesma pessoa acumule gap em mais de uma conta).
         if real_norm == "Professional" and not can_send:
             gap_count += 1
+
+    professional = sum(1 for v in email_is_pro.values() if v)
+    free = sum(1 for v in email_is_pro.values() if not v)
 
     for r in result:
         r["license_imported"] = r["account_id"] in imported_accounts

@@ -30,3 +30,8 @@ output "instance_id" {
 output "aws_region" {
   value = var.aws_region
 }
+
+output "instance_scheduler" {
+  description = "Resumo do agendamento de liga/desliga da instância (economia de crédito)."
+  value       = var.enable_instance_scheduler ? "ativo — liga: '${var.scheduler_start_cron}', desliga: '${var.scheduler_stop_cron}' (${var.scheduler_timezone})" : "desativado (instância roda 24/7)"
+}

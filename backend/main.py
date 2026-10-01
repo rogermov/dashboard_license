@@ -20,7 +20,14 @@ from graph_integration import get_config as get_graph_config, get_graph_token, g
 load_dotenv()
 
 app = FastAPI(title="AccessGuard API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# CORS: o frontend é servido pelo mesmo host/origin via nginx (chama /api), então
+# não precisa de CORS no uso normal. Mantemos configurável por env para casos
+# cross-origin legítimos (ex.: front em outro domínio), mas SEM "*" por padrão —
+# o backend não tem auth própria e tem endpoints DELETE destrutivos.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 DB_PATH   = "/data/accessguard.db"
 PLATFORMS = ["365", "docusign", "lucid", "bitbucket", "jira", "google"]
@@ -48,6 +55,10 @@ def get_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout evita "database is locked" imediato quando duas escritas coincidem
+    # (ex.: dois syncs, ou sync + import): a conexão espera até 5s pelo lock em vez
+    # de falhar na hora. Essencial com múltiplos workers/threads sobre o mesmo SQLite.
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA cache_size=-32000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=MEMORY")
@@ -650,34 +661,41 @@ def docusign_envelopes(start: str, end: str):
 def google_sync():
     url = os.getenv("GOOGLE_APPS_SCRIPT_URL")
     if not url: raise HTTPException(status_code=400, detail="URL do Apps Script não configurada")
-        
+
+    conn = get_db()
     try:
         # Timeout folgado: o Apps Script busca milhares de usuários do Workspace
         # (6k+), e com 45s estourava de vez em quando. 120s dá margem.
         resp = requests.get(url, timeout=120)
         data = resp.json()
         if not data.get("success"): raise Exception(data.get("error", "Erro na API Google"))
-            
+
         users = data.get("users", [])
-        conn = get_db()
-        
         conn.execute('''CREATE TABLE IF NOT EXISTS google_users (email TEXT PRIMARY KEY, name TEXT, status TEXT, org_unit TEXT, last_login TEXT, imported_at DATETIME DEFAULT (datetime('now', 'localtime')))''')
         conn.execute("DELETE FROM google_users")
         conn.execute("DELETE FROM platform_users WHERE platform='google'")
-        
+
         count = 0
         for u in users:
-            email, name, status = u.get("email"), u.get("name"), str(u.get("status")).lower()
-            conn.execute("INSERT INTO google_users (email, name, status, org_unit, last_login) VALUES (?, ?, ?, ?, ?)", (email, name, status, u.get("org_unit"), u.get("last_login", "")))
-            if status == "active" and email:
-                try: conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email.lower(), "google", name)); count += 1
-                except: pass
-                    
+            email = (u.get("email") or "").lower().strip()
+            if not email: continue  # evita IntegrityError (email é PK) e lixo
+            name, status = u.get("name"), str(u.get("status")).lower()
+            # ON CONFLICT: se o Apps Script devolver o mesmo e-mail 2x, atualiza em vez de quebrar.
+            conn.execute("""INSERT INTO google_users (email, name, status, org_unit, last_login) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET name=excluded.name, status=excluded.status, org_unit=excluded.org_unit, last_login=excluded.last_login""",
+                (email, name, status, u.get("org_unit"), u.get("last_login", "")))
+            if status == "active":
+                conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email, "google", name)); count += 1
+
         conn.commit()
-        conn.close()
         return {"message": f"Google Atualizado! {count} injetados."}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Erro no google_sync: {e}")
+        raise HTTPException(status_code=500, detail="Falha ao sincronizar o Google Workspace. Verifique os logs do servidor.")
+    finally:
+        conn.close()
 
 @app.get("/google/users")
 def google_users(status: str = "", search: str = ""):
@@ -782,9 +800,10 @@ def microsoft365_sync():
         conn.commit()
         return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga."}
     except Exception as e:
+        print(f"Erro no microsoft365_sync: {e}")
         conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
             ON CONFLICT(id) DO UPDATE SET error=?""", (str(e), str(e)))
         conn.commit()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Falha ao sincronizar o Microsoft 365. Verifique os logs do servidor.")
     finally:
         conn.close()

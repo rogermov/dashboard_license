@@ -34,8 +34,36 @@ com folga enorme.
 | 1x Role/Instance Profile IAM | Só permissão de gravar no bucket de backup |
 | 1x bucket S3 privado | Backup diário do SQLite |
 | 2x AWS Budgets + 1x SNS topic | Alerta por e-mail se o gasto passar de US$1 / 50% / 80% / 100% do teto |
+| 2x EventBridge Scheduler + 1x Role IAM | Liga/desliga a instância em horário útil p/ economizar crédito (opcional) |
 
 Não cria VPC própria — usa a VPC default da conta (já existe, sem custo).
+
+## Liga/desliga automático (economia de crédito)
+
+Como o app é de uso interno, ele não precisa ficar ligado 24/7. Por padrão a
+instância é **ligada às 07h e desligada às 20h, de segunda a sexta** (horário
+de Brasília), e fica desligada nos fins de semana. Isso corta ~130h/semana de
+computação EC2 — a parte mais cara — fazendo o crédito de 6 meses durar bem
+mais.
+
+Configurável em `terraform.tfvars`:
+
+```hcl
+enable_instance_scheduler = true                       # false = roda 24/7
+scheduler_timezone        = "America/Sao_Paulo"
+scheduler_start_cron      = "cron(0 7 ? * MON-FRI *)"  # liga 07h seg-sex
+scheduler_stop_cron       = "cron(0 20 ? * MON-FRI *)" # desliga 20h seg-sex
+```
+
+Usa EventBridge Scheduler chamando direto a API do EC2 (sem Lambda, sem custo
+para 2 disparos/dia). Para ligar/desligar manualmente fora do horário, basta
+usar o Console/AWS CLI (`aws ec2 start-instances` / `stop-instances`) — o
+agendamento volta a agir no próximo horário.
+
+> Detalhe de custo: com a instância desligada, o Elastic IP ocioso passa a
+> descontar ~US$0,005/h do crédito (fora da franquia de IPv4, que só vale com
+> a instância rodando). Mesmo assim compensa, pois você deixa de pagar a
+> computação, que é o item mais caro.
 
 ## Pré-requisitos (na sua máquina, não aqui no chat)
 
@@ -147,10 +175,12 @@ ssh -i accessguard-key.pem ubuntu@<IP> 'cd /opt/accessguard && docker compose -f
 
 ## Custos — o que observar
 
-- **EIP**: só é grátis enquanto associado a uma instância *rodando*. Se você
-  parar a instância (`stop`) por muito tempo sem motivo, o EIP passa a ser
-  cobrado (~US$0,005/h ≈ US$3,60/mês). Se for pausar por bastante tempo,
-  rode `terraform destroy` completo em vez de só parar a instância.
+- **EIP / IPv4**: desde fev/2024 a AWS cobra por todo IP público (~US$0,005/h ≈
+  US$3,60/mês). Há uma franquia de 750h/mês **enquanto o IP está anexado a uma
+  instância rodando**, que cobre este EIP no período gratuito. Com a instância
+  desligada (fim de semana / fora do horário do scheduler) essas horas ociosas
+  não entram na franquia e descontam do crédito. Se for pausar o projeto por
+  muito tempo, rode `terraform destroy` completo em vez de só parar a instância.
 - **EC2 parada não é "grátis por padrão"**: parar (`stop`) não cobra
   computação, mas o EBS anexado continua cobrando (poucos centavos/mês pra
   16GB). Não é motivo de alarme, só pra você entender a fatura.

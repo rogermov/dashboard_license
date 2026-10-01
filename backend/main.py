@@ -183,34 +183,43 @@ def health(): return {"status":"ok","timestamp":datetime.now().isoformat()}
 @app.get("/stats")
 def get_stats():
     conn = get_db()
-    total_terminated = conn.execute("SELECT COUNT(*) FROM terminated_users").fetchone()[0]
-    total_azure = conn.execute("SELECT COUNT(*) FROM azure_users").fetchone()[0]
-    terminated_with_access = conn.execute("""SELECT COUNT(DISTINCT p.email) FROM platform_users p INNER JOIN terminated_users t ON LOWER(p.email) = LOWER(t.email)""").fetchone()[0]
-    exposure_rows = conn.execute("""SELECT p.platform, COUNT(*) as count FROM platform_users p INNER JOIN terminated_users t ON LOWER(p.email) = LOWER(t.email) GROUP BY p.platform""").fetchall()
-    exposure_by_platform = {r["platform"]: r["count"] for r in exposure_rows}
-    platform_rows = conn.execute("SELECT platform, COUNT(*) as count FROM platform_users GROUP BY platform").fetchall()
-    platform_users_total = {r["platform"]: r["count"] for r in platform_rows}
-    conn.close()
-    return {
-        "total_terminated": total_terminated,
-        "terminated_with_active_access": terminated_with_access,
-        "total_azure_users": total_azure,
-        "exposure_by_platform": exposure_by_platform,
-        "platform_users": platform_users_total
-    }
+    try:
+        total_terminated = conn.execute("SELECT COUNT(*) FROM terminated_users").fetchone()[0]
+        total_azure = conn.execute("SELECT COUNT(*) FROM azure_users").fetchone()[0]
+        # e-mails são gravados sempre normalizados (minúsculas) por normalize_email, então
+        # o LOWER() dos dois lados do JOIN era redundante e impedia o uso dos índices de
+        # e-mail (forçava full scan). get_risk_users já junta direto por p.email=t.email.
+        terminated_with_access = conn.execute("""SELECT COUNT(DISTINCT p.email) FROM platform_users p INNER JOIN terminated_users t ON p.email = t.email""").fetchone()[0]
+        exposure_rows = conn.execute("""SELECT p.platform, COUNT(*) as count FROM platform_users p INNER JOIN terminated_users t ON p.email = t.email GROUP BY p.platform""").fetchall()
+        exposure_by_platform = {r["platform"]: r["count"] for r in exposure_rows}
+        platform_rows = conn.execute("SELECT platform, COUNT(*) as count FROM platform_users GROUP BY platform").fetchall()
+        platform_users_total = {r["platform"]: r["count"] for r in platform_rows}
+        return {
+            "total_terminated": total_terminated,
+            "terminated_with_active_access": terminated_with_access,
+            "total_azure_users": total_azure,
+            "exposure_by_platform": exposure_by_platform,
+            "platform_users": platform_users_total
+        }
+    finally:
+        conn.close()
 
 @app.get("/users/risk")
 def get_risk_users(search: str="", platform: str=""):
-    conn = get_db(); c = conn.cursor()
-    query = """SELECT t.email,t.name,t.department,t.termination_date, GROUP_CONCAT(DISTINCT pu.platform) as active_platforms FROM terminated_users t INNER JOIN platform_users pu ON t.email=pu.email WHERE 1=1"""
-    params = []
-    if search:
-        query += " AND (LOWER(t.email) LIKE ? OR LOWER(t.name) LIKE ?)"
-        params += [f"%{search.lower()}%",f"%{search.lower()}%"]
-    if platform:
-        query += " AND pu.platform=?"; params.append(platform)
-    query += " GROUP BY t.email ORDER BY t.termination_date DESC"
-    rows = c.execute(query,params).fetchall(); conn.close()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        query = """SELECT t.email,t.name,t.department,t.termination_date, GROUP_CONCAT(DISTINCT pu.platform) as active_platforms FROM terminated_users t INNER JOIN platform_users pu ON t.email=pu.email WHERE 1=1"""
+        params = []
+        if search:
+            query += " AND (LOWER(t.email) LIKE ? OR LOWER(t.name) LIKE ?)"
+            params += [f"%{search.lower()}%",f"%{search.lower()}%"]
+        if platform:
+            query += " AND pu.platform=?"; params.append(platform)
+        query += " GROUP BY t.email ORDER BY t.termination_date DESC"
+        rows = c.execute(query,params).fetchall()
+    finally:
+        conn.close()
     result = []
     for r in rows:
         plats = r["active_platforms"].split(",") if r["active_platforms"] else []
@@ -221,12 +230,16 @@ def get_risk_users(search: str="", platform: str=""):
 
 @app.get("/users/terminated")
 def get_all_terminated(search: str=""):
-    conn = get_db(); c = conn.cursor()
-    if search:
-        rows = c.execute("SELECT * FROM terminated_users WHERE LOWER(email) LIKE ? OR LOWER(name) LIKE ? ORDER BY imported_at DESC", (f"%{search.lower()}%",f"%{search.lower()}%")).fetchall()
-    else:
-        rows = c.execute("SELECT * FROM terminated_users ORDER BY imported_at DESC").fetchall()
-    conn.close(); return [dict(r) for r in rows]
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        if search:
+            rows = c.execute("SELECT * FROM terminated_users WHERE LOWER(email) LIKE ? OR LOWER(name) LIKE ? ORDER BY imported_at DESC", (f"%{search.lower()}%",f"%{search.lower()}%")).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM terminated_users ORDER BY imported_at DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 @app.delete("/users/terminated/clear")
 def clear_terminated_users():
@@ -241,8 +254,12 @@ def clear_terminated_users():
 
 @app.get("/licenses/by-domain")
 def licenses_by_domain():
-    conn = get_db(); c = conn.cursor()
-    rows = c.execute("SELECT email, platform FROM platform_users").fetchall(); conn.close()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        rows = c.execute("SELECT email, platform FROM platform_users").fetchall()
+    finally:
+        conn.close()
     from collections import defaultdict
     by_domain = defaultdict(lambda: defaultdict(int)); platforms_found = set()
     for row in rows:
@@ -716,11 +733,14 @@ def google_users(status: str = "", search: str = ""):
 
 @app.get("/microsoft365/status")
 def microsoft365_status():
-    conn = get_db(); c = conn.cursor()
-    log = c.execute("SELECT * FROM ms365_sync_log WHERE id=1").fetchone()
-    active = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=1").fetchone()[0]
-    disabled = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=0").fetchone()[0]
-    conn.close()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        log = c.execute("SELECT * FROM ms365_sync_log WHERE id=1").fetchone()
+        active = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=1").fetchone()[0]
+        disabled = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=0").fetchone()[0]
+    finally:
+        conn.close()
     return {
         "last_sync": to_brt(log["synced_at"]) if log else None,
         "last_error": log["error"] if log else None,
@@ -731,24 +751,28 @@ def microsoft365_status():
 @app.get("/microsoft365/licenses")
 def microsoft365_licenses():
     conn = get_db()
-    rows = conn.execute("SELECT * FROM ms365_licenses ORDER BY total DESC").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute("SELECT * FROM ms365_licenses ORDER BY total DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 @app.get("/microsoft365/users")
 def microsoft365_users(status: str = "", search: str = "", license: str = ""):
     conn = get_db()
-    query = "SELECT * FROM ms365_users WHERE 1=1"
-    params = []
-    if status: query += " AND account_enabled=?"; params.append(1 if status == "active" else 0)
-    if search: query += " AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"; params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
-    if license: query += " AND licenses LIKE ?"; params.append(f"%{license}%")
-    query += " ORDER BY name ASC"
-    # Tenant tem ~47k contas (a maioria sem licença); sem busca/filtro, limita para não travar a tabela no navegador
-    if not search and not status and not license: query += " LIMIT 500"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        query = "SELECT * FROM ms365_users WHERE 1=1"
+        params = []
+        if status: query += " AND account_enabled=?"; params.append(1 if status == "active" else 0)
+        if search: query += " AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"; params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
+        if license: query += " AND licenses LIKE ?"; params.append(f"%{license}%")
+        query += " ORDER BY name ASC"
+        # Tenant tem ~47k contas (a maioria sem licença); sem busca/filtro, limita para não travar a tabela no navegador
+        if not search and not status and not license: query += " LIMIT 500"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 @app.post("/microsoft365/sync")
 def microsoft365_sync():

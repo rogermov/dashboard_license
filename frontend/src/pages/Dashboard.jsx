@@ -25,21 +25,16 @@ export default function Dashboard(){
 const handleClearTerminated = async () => {
     if (!window.confirm("Tem certeza que deseja limpar a lista de desligados? As contas nas plataformas não serão afetadas.")) return;
     try {
-      // Pega o IP exato que você está usando no navegador automaticamente
-      const baseUrl = `http://${window.location.hostname}:8000`;
-      
-      const res = await fetch(`${baseUrl}/users/terminated/clear`, { method: "DELETE" });
-      if (res.ok) {
-        alert("Lista limpa com sucesso!");
-        load(); // Atualiza os gráficos na hora
-      } else {
-        alert("Erro ao limpar. O backend não respondeu OK.");
-      }
+      // Usa o cliente api (passa pelo proxy /api do nginx + Basic Auth e limpa o cache).
+      // Antes isto chamava http://host:8000 direto, furando o proxy/auth e quebrando em
+      // produção (a porta 8000 não é exposta ao navegador).
+      await api.delete('/users/terminated/clear');
+      load(); // Atualiza os gráficos na hora
     } catch (e) {
       console.error(e);
-      alert("Erro ao conectar com a API.");
+      alert(e.message || "Erro ao limpar a lista de desligados.");
     }
-  };  
+  };
   const chartData=Object.entries(stats?.exposure_by_platform||{}).map(([k,v])=>({name:PL[k]||k,key:k,value:v})).sort((a,b)=>b.value-a.value);
   return(<div style={{animation:'fadeIn 0.3s ease'}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1.75rem'}}>
@@ -91,7 +86,7 @@ const handleClearTerminated = async () => {
         <tbody>
           {loading?<tr><td colSpan={6} style={{textAlign:'center',padding:'2.5rem',color:'var(--text3)'}}>Carregando...</td></tr>:
           risk.length===0?<tr><td colSpan={6} style={{textAlign:'center',padding:'2.5rem',color:'var(--green)',fontSize:'0.85rem'}}>✓ Nenhum usuário desligado com acesso ativo</td></tr>:
-          risk.map((u,i)=><tr key={i} style={{borderTop:'1px solid var(--border)',transition:'background 0.1s'}} onMouseEnter={e=>e.currentTarget.style.background='var(--blue-50)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+          risk.map((u)=><tr key={u.email} style={{borderTop:'1px solid var(--border)',transition:'background 0.1s'}} onMouseEnter={e=>e.currentTarget.style.background='var(--blue-50)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
             <td style={{padding:'0.7rem 1rem',fontFamily:'var(--font-mono)',fontSize:'0.75rem',color:'var(--text2)'}}>{u.email}</td>
             <td style={{padding:'0.7rem 1rem',fontWeight:500}}>{u.name||'—'}</td>
             <td style={{padding:'0.7rem 1rem',color:'var(--text2)'}}>{u.department||'—'}</td>

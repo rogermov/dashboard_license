@@ -65,7 +65,7 @@ export default function Microsoft365() {
     const names = (licStr || '').split(';').filter(Boolean);
     if (!names.length) return <span style={{ fontSize: '0.75rem', color: 'var(--text3)' }}>Sem licença</span>;
     return <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>{names.map((n, i) => (
-      <span key={i} style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 600, fontFamily: 'var(--font-mono)', background: 'var(--blue-100)', color: 'var(--blue-600)', border: '1px solid var(--blue-600)30' }}>{n}</span>
+      <span key={i} style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 600, fontFamily: 'var(--font-mono)', background: 'var(--blue-100)', color: 'var(--blue-600)', border: '1px solid color-mix(in srgb, var(--blue-600) 25%, transparent)' }}>{n}</span>
     ))}</div>;
   };
 
@@ -104,15 +104,28 @@ export default function Microsoft365() {
 
       {licenses.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: '0.85rem', marginBottom: '1.5rem' }}>
-          {licenses.map(l => (
-            <div key={l.sku_id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.1rem', boxShadow: 'var(--shadow-sm)', borderTop: '3px solid var(--blue-400)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={14} color="var(--blue-600)" /><span style={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.3 }}>{l.friendly_name}</span></div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{l.consumed} <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text3)' }}>/ {l.total}</span></div>
-              <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: '0.5rem', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${l.total ? Math.min(100, (l.consumed / l.total) * 100) : 0}%`, background: l.consumed >= l.total ? 'var(--red)' : 'var(--blue-400)' }} />
+          {licenses.map(l => {
+            const total = l.total || 0;
+            const ratio = total > 0 ? l.consumed / total : 0;
+            const pct = Math.min(100, ratio * 100);
+            const over = total > 0 && l.consumed > total;      // estourou o limite
+            const near = !over && ratio >= 0.9;                 // 90%+ dos assentos usados
+            const color = over ? 'var(--red)' : near ? 'var(--yellow)' : 'var(--blue-400)';
+            return (
+              <div key={l.sku_id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.1rem', boxShadow: 'var(--shadow-sm)', borderTop: `3px solid ${color}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={14} color="var(--blue-600)" /><span style={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.3 }}>{l.friendly_name}</span></div>
+                <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{l.consumed} <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text3)' }}>/ {total}</span></div>
+                <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: '0.5rem', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${pct}%`, background: color }} />
+                </div>
+                {(over || near) && (
+                  <div style={{ fontSize: '0.66rem', fontWeight: 600, color, marginTop: '0.4rem' }}>
+                    {over ? `⚠ ${l.consumed - total} acima do limite` : '⚠ perto do limite (90%+)'}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -137,7 +150,7 @@ export default function Microsoft365() {
         <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
           <thead><tr style={{ background: 'var(--bg3)' }}>{['Email', 'Nome', 'Status', 'Licenças', 'Sincronizado em'].map(h => <th key={h} style={{ padding: '0.65rem 1rem', textAlign: 'left', color: 'var(--text2)', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.7, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
           <tbody>{usersLoading ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Carregando...</td></tr> : users.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)', fontSize: '0.85rem' }}>{status?.total ? 'Nenhum utilizador encontrado' : 'Clique em "Revalidar" para procurar'}</td></tr> :
-            users.map((u, i) => <tr key={i} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+            users.map((u) => <tr key={u.email} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
               <td style={{ padding: '0.7rem 1rem', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text2)' }}>{u.email}</td>
               <td style={{ padding: '0.7rem 1rem', fontWeight: 500 }}>{u.name || '—'}</td>
               <td style={{ padding: '0.7rem 1rem' }}>{u.account_enabled ? <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 700, fontFamily: 'var(--font-mono)', background: 'var(--green-bg)', color: 'var(--green)' }}>Ativo</span> : <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 700, fontFamily: 'var(--font-mono)', background: 'var(--bg3)', color: 'var(--text3)' }}>Desativado</span>}</td>

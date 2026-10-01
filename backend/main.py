@@ -404,17 +404,28 @@ def docusign_status():
                      for r in c.execute("SELECT account_id, email, license_type FROM docusign_license_import").fetchall()}
     imported_accounts = {r["account_id"] for r in c.execute("SELECT DISTINCT account_id FROM docusign_license_import").fetchall()}
 
-    professional = free = gap_count = 0
+    # Conta licenças por PESSOA (e-mail único), não por conta. Um assento DocuSign é
+    # por pessoa e compartilhado entre as contas da assinatura — quem está em 2+ contas
+    # consome 1 assento, não N. Somar por conta inflava o número (ex.: 276 em vez dos
+    # 254 reais que a própria DocuSign mostra). Agregamos por e-mail: a pessoa é
+    # Professional se tiver licença Professional em QUALQUER conta.
+    per_email = {}  # email -> {"pro": bool, "can_send": bool}
     for row in c.execute("SELECT account_id, email, raw_json FROM docusign_users").fetchall():
+        email = (row["email"] or "").lower().strip()
+        if not email: continue
         raw = json.loads(row["raw_json"] or "{}")
         can_send = raw.get("userSettings", {}).get("canSendEnvelope") in ("true", True)
-        real = imported_map.get((row["account_id"], row["email"].lower().strip()))
+        real = imported_map.get((row["account_id"], email))
         real_norm = "Professional" if real and "professional" in real.lower() else ("Free" if real else None)
         is_pro = (real_norm == "Professional") if real_norm else can_send
-        if is_pro: professional += 1
-        else: free += 1
-        if real_norm == "Professional" and not can_send:
-            gap_count += 1
+        e = per_email.setdefault(email, {"pro": False, "can_send": False})
+        if is_pro: e["pro"] = True
+        if can_send: e["can_send"] = True
+
+    professional = sum(1 for e in per_email.values() if e["pro"])
+    free = sum(1 for e in per_email.values() if not e["pro"])
+    # GAP: paga Professional mas em nenhuma conta tem perfil que permite enviar.
+    gap_count = sum(1 for e in per_email.values() if e["pro"] and not e["can_send"])
 
     for r in result:
         r["license_imported"] = r["account_id"] in imported_accounts

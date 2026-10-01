@@ -2,8 +2,25 @@ const BASE = '/api';
 const cache = new Map();
 const TTL = 30_000;
 async function fetchJson(url, options = {}) {
-  const res = await fetch(url, options);
-  if (!res.ok) throw new Error('HTTP ' + res.status);
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch {
+    throw new Error('Falha de conexão com o servidor. Verifique sua rede.');
+  }
+  if (!res.ok) {
+    // FastAPI devolve erros como {"detail": "..."} — mostra a mensagem real do backend
+    // em vez de um "HTTP 500" genérico.
+    let msg = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && body.detail) msg = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+    } catch { /* corpo não-JSON: mantém o status */ }
+    if (res.status === 401) msg = 'Não autenticado (sessão expirou?). Recarregue a página para entrar de novo.';
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 export const api = {

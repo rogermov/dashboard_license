@@ -313,7 +313,13 @@ def sync_real_licenses(integration_key: str, user_id: str, rsa_key_path: str) ->
             continue
         guid = row.get("AccountID")
         records.append({
-            "account_id": account_map.get(guid, guid),
+            # Grava o GUID da conta (mesmo identificador usado em docusign_users.account_id,
+            # vindo do DS_ACCOUNT_ID_* do .env). Antes convertíamos para o número
+            # (external_account_id) via account_map, mas aí o join em /docusign/status e
+            # /docusign/users NUNCA casava (GUID x número) e a licença real era ignorada,
+            # caindo sempre na estimativa por canSendEnvelope. (account_map fica como
+            # referência de GUID->número, caso precise no futuro.)
+            "account_id": guid,
             "email": email,
             "license_type": row.get("LicenseType"),
             "status": row.get("UserStatus"),

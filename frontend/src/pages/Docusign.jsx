@@ -199,12 +199,31 @@ export default function Docusign() {
               <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.25rem', boxShadow: 'var(--shadow-sm)', borderTop: '3px solid var(--blue-400)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={15} color="var(--blue-600)" /><span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Professional Licença</span></div>
                 <div style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.6rem' }}>{status.license_summary.professional} <span style={{ fontSize: '0.78rem', fontWeight: 500, color: 'var(--text3)' }}>atribuída(s)</span></div>
-                {status.license_summary.included_seats != null && (
-                  <div style={{ display: 'flex', gap: '0.4rem', background: 'var(--bg3)', borderRadius: 'var(--radius)', padding: '0.5rem 0.65rem', fontSize: '0.72rem', color: 'var(--text2)', lineHeight: 1.4, marginBottom: '0.5rem' }}>
-                    <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                    <span>{Math.max(0, status.license_summary.included_seats - status.license_summary.professional)} de {status.license_summary.included_seats} licenças disponíveis, compartilhadas entre todas as contas.</span>
-                  </div>
-                )}
+                {status.license_summary.included_seats != null && (() => {
+                  const seats = status.license_summary.included_seats;
+                  const used = status.license_summary.professional;
+                  const avail = seats - used;
+                  const pct = seats > 0 ? used / seats : 0;
+                  const over = avail < 0;
+                  const near = !over && pct >= 0.9; // 90%+ dos assentos usados = perto do limite
+                  const color = over ? 'var(--red)' : near ? 'var(--yellow)' : 'var(--green)';
+                  const bg = over ? 'var(--red-bg)' : near ? 'rgba(234,179,8,0.12)' : 'var(--bg3)';
+                  return (
+                    <div style={{ background: bg, border: `1px solid ${color}`, borderRadius: 'var(--radius)', padding: '0.5rem 0.65rem', fontSize: '0.72rem', color: 'var(--text2)', lineHeight: 1.4, marginBottom: '0.5rem' }}>
+                      <div style={{ display: 'flex', gap: '0.4rem' }}>
+                        {over ? <AlertOctagon size={13} color={color} style={{ flexShrink: 0, marginTop: 1 }} /> : <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />}
+                        <span>
+                          {over
+                            ? <><b style={{ color }}>{Math.abs(avail)} licença(s) ACIMA do limite</b> de {seats} — compartilhadas entre todas as contas.</>
+                            : <><b style={{ color }}>{avail} de {seats}</b> licenças disponíveis{near ? ' — perto do limite!' : ''}, compartilhadas entre todas as contas.</>}
+                        </span>
+                      </div>
+                      <div style={{ marginTop: '0.4rem', height: 5, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.min(100, pct * 100)}%`, background: color }} />
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div style={{ fontSize: '0.68rem', color: 'var(--text3)', lineHeight: 1.4 }}>
                   {accounts.some(a => a.license_imported)
                     ? '✓ Licença real, via Admin API do DocuSign (mesma fonte da tela Admin → Usuários → Exportar).'

@@ -652,7 +652,9 @@ def google_sync():
     if not url: raise HTTPException(status_code=400, detail="URL do Apps Script não configurada")
         
     try:
-        resp = requests.get(url, timeout=45)
+        # Timeout folgado: o Apps Script busca milhares de usuários do Workspace
+        # (6k+), e com 45s estourava de vez em quando. 120s dá margem.
+        resp = requests.get(url, timeout=120)
         data = resp.json()
         if not data.get("success"): raise Exception(data.get("error", "Erro na API Google"))
             

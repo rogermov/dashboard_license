@@ -2,11 +2,9 @@
 import React,{useState,useEffect} from 'react';
 import {Search,Download} from 'lucide-react';
 import {api} from '../hooks/api.js';
-const PLATFORMS=['365','docusign','lucid','bitbucket','jira','google'];
-const PL={'365':'Microsoft 365',docusign:'DocuSign',lucid:'Lucid',bitbucket:'Bitbucket',jira:'Jira',google:'Google Workspace'};
-const PC={'365':'#1e5fad',docusign:'#7c3aed',lucid:'#d97706',bitbucket:'#059669',jira:'#0284c7',google:'#dc2626'};
-const RiskBadge=({level})=>{const m={high:['var(--red)','var(--red-bg)','ALTO'],medium:['var(--yellow)','var(--yellow-bg)','MÉDIO'],low:['var(--green)','var(--green-bg)','BAIXO']};const[color,bg,text]=m[level]||['var(--text3)','var(--bg3)',level];return<span style={{padding:'2px 8px',borderRadius:4,fontSize:'0.65rem',fontWeight:700,fontFamily:'var(--font-mono)',background:bg,color}}>{text}</span>;};
-function exportCSV(data,filename){if(!data.length)return;const h=Object.keys(data[0]);const rows=data.map(r=>h.map(k=>`"${(r[k]||'').toString().replace(/"/g,'""')}"`).join(','));const blob=new Blob([[h.join(','),...rows].join('\n')],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);}
+import { PLATFORMS, PLATFORM_LABELS as PL, PLATFORM_COLORS as PC } from '../lib/platforms.js';
+import { exportCSV } from '../lib/csv.js';
+import RiskBadge from '../components/RiskBadge.jsx';
 export default function Users(){
   const[tab,setTab]=useState('risk');const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');const[data,setData]=useState([]);const[loading,setLoading]=useState(false);const[azureList,setAzureList]=useState([]);const[azureLoading,setAzureLoading]=useState(false);
   const load=async()=>{setLoading(true);try{const p=new URLSearchParams();if(search)p.append('search',search);if(platform)p.append('platform',platform);const ep=tab==='risk'?'/users/risk':'/users/terminated';setData(await api.get(`${ep}?${p}`,{noCache:true}));}catch{setData([]);}finally{setLoading(false);}}

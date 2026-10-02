@@ -1,37 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { RefreshCw, CheckCircle, Clock, AlertTriangle, ExternalLink, Search, Download, Loader, Send, User, Filter, BadgeCheck, Info, AlertOctagon } from 'lucide-react';
 import { api } from '../hooks/api.js';
+import { exportCSV } from '../lib/csv.js';
+import Toast from '../components/Toast.jsx';
+import { useToast } from '../hooks/useToast.js';
 
 const SM = { active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, pending: { label: 'Pendente', color: 'var(--yellow)', bg: 'var(--yellow-bg)' } };
 
-// Exportação Padrão (para a aba de Usuários)
-function exportCSV(data, filename) {
-  if (!data.length) return;
-  const h = Object.keys(data[0]);
-  const rows = data.map(r => h.map(k => `"${(r[k] || '').toString().replace(/"/g, '""')}"`).join(','));
-  const blob = new Blob([[h.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
-}
-
-// Exportação Customizada para o seu Script Python de Migração
+// Exportação customizada para o script de migração: mapeia para as colunas certas
+// e reaproveita o exportCSV genérico (as chaves do objeto viram os cabeçalhos).
 function exportMigrationCSV(data, filename) {
-  if (!data.length) return;
-  const headers = ['Email', 'Nome', 'Conta', 'Perfil', 'Envios'];
-  const rows = data.map(u => [
-    `"${u.email}"`,
-    `"${u.name}"`,
-    `"${u.account_name}"`,
-    `"${u.permission_profile}"`,
-    u.count
-  ].join(','));
-  
-  const csvContent = [headers.join(','), ...rows].join('\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  exportCSV(data.map(u => ({ Email: u.email, Nome: u.name, Conta: u.account_name, Perfil: u.permission_profile, Envios: u.count })), filename);
 }
 
 export default function Docusign() {
@@ -48,7 +27,6 @@ export default function Docusign() {
   const [availableLicenses, setAvailableLicenses] = useState([]);
   const [gapOnly, setGapOnly] = useState(false);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [toast, setToast] = useState(null);
   const [importing, setImporting] = useState(false);
 
   const [activeTab, setActiveTab] = useState('users');
@@ -61,7 +39,7 @@ export default function Docusign() {
   const [envMaxSends, setEnvMaxSends] = useState(''); 
   const [envFilterPerm, setEnvFilterPerm] = useState(''); 
 
-  const showToast = (msg, ok) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 5000); };
+  const { toast, showToast } = useToast();
 
   const loadStatus = async () => { setLoading(true); try { setStatus(await api.get('/docusign/status', { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
   
@@ -158,7 +136,7 @@ export default function Docusign() {
 
   return (
     <div style={{ animation: 'fadeIn 0.3s ease' }}>
-      {toast && <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 9999, background: 'var(--bg2)', border: `1px solid ${toast.ok ? 'var(--green)' : 'var(--red)'}`, borderRadius: 'var(--radius-lg)', padding: '0.9rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.82rem', boxShadow: 'var(--shadow-lg)', maxWidth: 420 }}>{toast.ok ? <CheckCircle size={16} color="var(--green)" /> : <AlertTriangle size={16} color="var(--red)" />}<span>{toast.msg}</span></div>}
+      <Toast toast={toast} />
       
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>DocuSign</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Gestão de acessos e volume de uso</p></div>

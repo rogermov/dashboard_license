@@ -3,9 +3,8 @@ import React,{useEffect,useState} from 'react';
 import {BarChart,Bar,XAxis,YAxis,Tooltip,ResponsiveContainer,Legend,Cell} from 'recharts';
 import {RefreshCw,Download,Building2} from 'lucide-react';
 import {api} from '../hooks/api.js';
-const PC={'365':'#1e5fad',docusign:'#7c3aed',lucid:'#d97706',bitbucket:'#059669',jira:'#0284c7',google:'#dc2626'};
-const PL={'365':'Microsoft 365',docusign:'DocuSign',lucid:'Lucid',bitbucket:'Bitbucket',jira:'Jira',google:'Google'};
-function exportCSV(data,filename){if(!data.length)return;const h=Object.keys(data[0]);const rows=data.map(r=>h.map(k=>`"${(r[k]??'').toString().replace(/"/g,'""')}"`).join(','));const blob=new Blob([[h.join(','),...rows].join('\n')],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);}
+import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
+import { exportCSV } from '../lib/csv.js';
 export default function Licenses(){
   const[data,setData]=useState(null);const[loading,setLoading]=useState(true);const[sel,setSel]=useState('all');
   const load=async()=>{setLoading(true);try{setData(await api.get('/licenses/by-domain',{noCache:true}));}catch{setData(null);}finally{setLoading(false);}}; 

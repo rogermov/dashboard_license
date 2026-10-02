@@ -3,8 +3,8 @@ import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { AlertTriangle, Users, Shield, RefreshCw, TrendingUp, Activity } from 'lucide-react';
 import { api } from '../hooks/api.js';
-const PC={'365':'#1e5fad',docusign:'#7c3aed',lucid:'#d97706',bitbucket:'#059669',jira:'#0284c7',google:'#dc2626'};
-const PL={'365':'Microsoft 365',docusign:'DocuSign',lucid:'Lucid',bitbucket:'Bitbucket',jira:'Jira',google:'Google'};
+import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
+import RiskBadge from '../components/RiskBadge.jsx';
 function StatCard({label,value,sub,color,icon:Icon,loading}){
   return(<div style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'1.25rem 1.5rem',boxShadow:'var(--shadow-sm)',borderTop:`3px solid ${color||'var(--accent)'}`}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
@@ -17,7 +17,6 @@ function StatCard({label,value,sub,color,icon:Icon,loading}){
     </div>
   </div>);
 }
-const RiskBadge=({level})=>{const m={high:['var(--red)','var(--red-bg)','ALTO'],medium:['var(--yellow)','var(--yellow-bg)','MÉDIO'],low:['var(--green)','var(--green-bg)','BAIXO']};const[color,bg,text]=m[level]||['var(--text3)','var(--bg3)',level];return<span style={{padding:'2px 8px',borderRadius:4,fontSize:'0.65rem',fontWeight:700,fontFamily:'var(--font-mono)',background:bg,color}}>{text}</span>;};
 export default function Dashboard(){
   const[stats,setStats]=useState(null);const[risk,setRisk]=useState([]);const[loading,setLoading]=useState(true);
   const load=async()=>{setLoading(true);try{const[s,r]=await Promise.all([api.get('/stats',{noCache:true}),api.get('/users/risk',{noCache:true})]);setStats(s);setRisk(r.slice(0,10));}catch(e){console.error(e);}finally{setLoading(false);}};

@@ -1,15 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Search, Download, Loader, User, BadgeCheck } from 'lucide-react';
+import { RefreshCw, CheckCircle, XCircle, Search, Download, Loader, User, BadgeCheck } from 'lucide-react';
 import { api } from '../hooks/api.js';
-
-function exportCSV(data, filename) {
-  if (!data.length) return;
-  const h = Object.keys(data[0]);
-  const rows = data.map(r => h.map(k => `"${(r[k] || '').toString().replace(/"/g, '""')}"`).join(','));
-  const blob = new Blob([[h.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
-}
+import { exportCSV } from '../lib/csv.js';
+import Toast from '../components/Toast.jsx';
+import { useToast } from '../hooks/useToast.js';
 
 export default function Microsoft365() {
   const [status, setStatus] = useState(null);
@@ -21,9 +15,7 @@ export default function Microsoft365() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterLicense, setFilterLicense] = useState('');
-  const [toast, setToast] = useState(null);
-
-  const showToast = (msg, ok) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 5000); };
+  const { toast, showToast } = useToast();
 
   const loadStatus = async () => { setLoading(true); try { setStatus(await api.get('/microsoft365/status', { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
   const loadLicenses = async () => { try { setLicenses(await api.get('/microsoft365/licenses', { noCache: true })); } catch { setLicenses([]); } };
@@ -71,7 +63,7 @@ export default function Microsoft365() {
 
   return (
     <div style={{ animation: 'fadeIn 0.3s ease' }}>
-      {toast && <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 9999, background: 'var(--bg2)', border: `1px solid ${toast.ok ? 'var(--green)' : 'var(--red)'}`, borderRadius: 'var(--radius-lg)', padding: '0.9rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.82rem', boxShadow: 'var(--shadow-lg)', maxWidth: 420 }}>{toast.ok ? <CheckCircle size={16} color="var(--green)" /> : <AlertTriangle size={16} color="var(--red)" />}<span>{toast.msg}</span></div>}
+      <Toast toast={toast} />
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>Microsoft 365</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Gestão de acessos e licenças do tenant</p></div>

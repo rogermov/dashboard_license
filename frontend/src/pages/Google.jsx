@@ -1,28 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, CheckCircle, AlertTriangle, Search, Download, Loader, ChevronLeft, ChevronRight } from 'lucide-react';
+import { RefreshCw, Search, Download, Loader, ChevronLeft, ChevronRight } from 'lucide-react';
 import { api } from '../hooks/api.js';
+import { exportCSV } from '../lib/csv.js';
+import Toast from '../components/Toast.jsx';
+import { useToast } from '../hooks/useToast.js';
 
-const SM = { 
-  active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, 
-  suspended: { label: 'Suspenso', color: 'var(--red)', bg: 'var(--red-bg)' } 
+const SM = {
+  active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' },
+  suspended: { label: 'Suspenso', color: 'var(--red)', bg: 'var(--red-bg)' }
 };
-
-function exportCSV(data, filename) {
-  if (!data.length) return;
-  const headers = ['Email', 'Nome', 'Unidade', 'Status', 'Ultimo Login'];
-  const rows = data.map(u => [
-    `"${u.email}"`, `"${u.name}"`, `"${u.org_unit || '/'}"`, `"${u.status}"`, `"${u.last_login}"`
-  ].join(','));
-  const blob = new Blob([[headers.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
-}
 
 export default function Google() {
   const [users, setUsers] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [toast, setToast] = useState(null);
+  const { toast, showToast } = useToast();
 
   // Filtros e Paginação
   const [search, setSearch] = useState('');
@@ -30,8 +22,6 @@ export default function Google() {
   const [filterOrgUnit, setFilterOrgUnit] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 50; // Quantidade de usuários por página
-
-  const showToast = (msg, ok) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 5000); };
 
   // Agora puxamos todos de uma vez para paginar no frontend de forma instantânea
   const loadUsers = async () => { 
@@ -78,7 +68,7 @@ export default function Google() {
 
   return (
     <div style={{ animation: 'fadeIn 0.3s ease' }}>
-      {toast && <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 9999, background: 'var(--bg2)', border: `1px solid ${toast.ok ? 'var(--green)' : 'var(--red)'}`, borderRadius: 'var(--radius-lg)', padding: '0.9rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.82rem', boxShadow: 'var(--shadow-lg)' }}>{toast.ok ? <CheckCircle size={16} color="var(--green)" /> : <AlertTriangle size={16} color="var(--red)" />}<span>{toast.msg}</span></div>}
+      <Toast toast={toast} />
       
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
         <div>
@@ -123,7 +113,7 @@ export default function Google() {
             <option value="suspended">Suspensos</option>
           </select>
 
-          <button onClick={() => exportCSV(filteredUsers, `google_workspace_export.csv`)} disabled={!filteredUsers.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: filteredUsers.length ? 1 : 0.5 }}>
+          <button onClick={() => exportCSV(filteredUsers.map(u => ({ Email: u.email, Nome: u.name, Unidade: u.org_unit || '/', Status: u.status, 'Ultimo Login': u.last_login })), `google_workspace_export.csv`)} disabled={!filteredUsers.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: filteredUsers.length ? 1 : 0.5 }}>
             <Download size={13} /> CSV
           </button>
         </div>
@@ -138,10 +128,10 @@ export default function Google() {
             <tbody>
               {usersLoading ? <tr><td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Carregando diretório...</td></tr> : 
                paginatedUsers.length === 0 ? <tr><td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Nenhum usuário encontrado neste filtro.</td></tr> :
-               paginatedUsers.map((u, i) => { 
-                 const s = SM[u.status] || SM.active; 
+               paginatedUsers.map((u) => {
+                 const s = SM[u.status] || SM.active;
                  return (
-                  <tr key={i} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                  <tr key={u.email} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
                     <td style={{ padding: '0.7rem 1rem', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text2)' }}>{u.email}</td>
                     <td style={{ padding: '0.7rem 1rem', fontWeight: 500 }}>{u.name}</td>
                     <td style={{ padding: '0.7rem 1rem', color: 'var(--text2)', fontSize: '0.75rem' }}>{u.org_unit || '/'}</td>

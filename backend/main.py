@@ -831,3 +831,65 @@ def microsoft365_sync():
         raise HTTPException(status_code=500, detail="Falha ao sincronizar o Microsoft 365. Verifique os logs do servidor.")
     finally:
         conn.close()
+
+# ─── ALERTAS DE LICENÇA (Google Chat) ──────────────────────────────────────────
+
+def _license_alerts(conn):
+    """Linhas de alerta para licenças perto/acima do limite (threshold em %)."""
+    threshold = float(os.getenv("ALERT_THRESHOLD_PCT", "90")) / 100.0
+    alerts = []
+    # DocuSign: assentos Professional (e-mails distintos) vs included_seats do plano.
+    prof = conn.execute("SELECT COUNT(DISTINCT email) FROM docusign_license_import WHERE license_type LIKE '%Professional%'").fetchone()[0]
+    seats = None
+    try:
+        config = get_config()
+        first = next((a for a in config["accounts"] if a["id"]), None)
+        if first:
+            token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
+            seats = get_included_seats(first, token)
+    except Exception as e:
+        print(f"Erro ao buscar seats p/ alerta: {e}")
+    if seats and prof >= seats * threshold:
+        extra = f" — ACIMA DO LIMITE em {prof - seats}" if prof > seats else ""
+        alerts.append(f"*DocuSign Professional:* {prof}/{seats} assentos{extra}")
+    # Microsoft 365: SKUs com tamanho relevante (>=5 assentos; ignora os triviais de
+    # 1-4 e os ilimitados de total>=1M, que só gerariam ruído).
+    for r in conn.execute("SELECT friendly_name, total, consumed FROM ms365_licenses WHERE total>=5 AND total<1000000").fetchall():
+        if r["consumed"] >= r["total"] * threshold:
+            extra = f" — ACIMA em {r['consumed'] - r['total']}" if r["consumed"] > r["total"] else ""
+            alerts.append(f"*M365 — {r['friendly_name']}:* {r['consumed']}/{r['total']}{extra}")
+    return alerts
+
+@app.get("/alerts/license-status")
+def alerts_license_status():
+    """Só lista o que está perto/acima do limite, SEM notificar (para testar)."""
+    conn = get_db()
+    try:
+        return {"alerts": _license_alerts(conn), "threshold_pct": float(os.getenv("ALERT_THRESHOLD_PCT", "90"))}
+    finally:
+        conn.close()
+
+@app.post("/alerts/license-check")
+def alerts_license_check():
+    """Checa as licenças e, se houver algo perto/acima do limite, notifica no Google
+    Chat (webhook em GOOGLE_CHAT_WEBHOOK_URL). Pensado para rodar junto do sync diário."""
+    webhook = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
+    conn = get_db()
+    try:
+        alerts = _license_alerts(conn)
+    finally:
+        conn.close()
+    if not alerts:
+        return {"notified": False, "reason": "nada perto do limite", "alerts": []}
+    if not webhook:
+        return {"notified": False, "reason": "GOOGLE_CHAT_WEBHOOK_URL não configurado", "alerts": alerts}
+    text = "⚠️ *AccessGuard — Alerta de Licenças*\n\n" + "\n".join(alerts)
+    try:
+        resp = requests.post(webhook, json={"text": text}, timeout=15)
+        ok = resp.status_code == 200
+        if not ok:
+            print(f"Google Chat webhook retornou {resp.status_code}: {resp.text[:200]}")
+        return {"notified": ok, "alerts": alerts, "webhook_status": resp.status_code}
+    except Exception as e:
+        print(f"Erro ao notificar Google Chat: {e}")
+        raise HTTPException(status_code=502, detail="Falha ao enviar notificação ao Google Chat. Veja os logs.")

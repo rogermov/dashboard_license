@@ -1,29 +1,36 @@
-import React, { useState } from 'react';
-import Dashboard from './pages/Dashboard.jsx';
-import Import from './pages/Import.jsx';
-import Users from './pages/Users.jsx';
-import Licenses from './pages/Licenses.jsx';
-import Docusign from './pages/Docusign.jsx';
-import Google from './pages/Google.jsx';
-import Microsoft365 from './pages/Microsoft365.jsx';
+import React, { Suspense, lazy } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar.jsx';
 
+// Lazy-load: cada página só é carregada (e só dispara seus fetches) quando a
+// rota é aberta. Antes o App montava as 7 páginas de uma vez (todas faziam
+// fetch no load, mesmo as nunca abertas).
+const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+const Licenses = lazy(() => import('./pages/Licenses.jsx'));
+const Docusign = lazy(() => import('./pages/Docusign.jsx'));
+const Google = lazy(() => import('./pages/Google.jsx'));
+const Microsoft365 = lazy(() => import('./pages/Microsoft365.jsx'));
+const Import = lazy(() => import('./pages/Import.jsx'));
+const Users = lazy(() => import('./pages/Users.jsx'));
+
 export default function App() {
-  const [page, setPage] = useState('dashboard');
-  
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
-      <Sidebar current={page} onChange={setPage} />
-      
-      {/* O React vai carregar todas as telas, mas só mostrar a que você clicou! */}
+      <Sidebar />
       <main style={{ flex: 1, padding: '2rem 2.5rem', overflowY: 'auto', maxHeight: '100vh', background: 'var(--bg)' }}>
-        <div style={{ display: page === 'dashboard' ? 'block' : 'none' }}><Dashboard /></div>
-        <div style={{ display: page === 'licenses' ? 'block' : 'none' }}><Licenses /></div>
-        <div style={{ display: page === 'docusign' ? 'block' : 'none' }}><Docusign /></div>
-        <div style={{ display: page === 'google' ? 'block' : 'none' }}><Google /></div>
-        <div style={{ display: page === 'microsoft365' ? 'block' : 'none' }}><Microsoft365 /></div>
-        <div style={{ display: page === 'import' ? 'block' : 'none' }}><Import /></div>
-        <div style={{ display: page === 'users' ? 'block' : 'none' }}><Users /></div>
+        <Suspense fallback={<div style={{ padding: '2rem', color: 'var(--text3)', fontSize: '0.85rem' }}>Carregando…</div>}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/licenses" element={<Licenses />} />
+            <Route path="/docusign" element={<Docusign />} />
+            <Route path="/google" element={<Google />} />
+            <Route path="/microsoft365" element={<Microsoft365 />} />
+            <Route path="/import" element={<Import />} />
+            <Route path="/users" element={<Users />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </Suspense>
       </main>
     </div>
   );

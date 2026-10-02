@@ -101,6 +101,11 @@ def init_db():
     c.execute("""CREATE TABLE IF NOT EXISTS docusign_license_import (
         account_id TEXT NOT NULL, email TEXT NOT NULL, license_type TEXT, status TEXT,
         imported_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(account_id, email))""")
+    # Foto do estado dos usuários por plataforma, para detectar movimentações
+    # (novos / alteração de atribuição / removidos) entre uma checagem e a próxima.
+    c.execute("""CREATE TABLE IF NOT EXISTS user_snapshot (
+        platform TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT, label TEXT,
+        PRIMARY KEY(platform, key))""")
 
     for sql in [
         "CREATE INDEX IF NOT EXISTS idx_terminated_email ON terminated_users(email)",
@@ -852,12 +857,13 @@ def _license_alerts(conn):
     if seats and prof >= seats * threshold:
         extra = f" — ACIMA DO LIMITE em {prof - seats}" if prof > seats else ""
         alerts.append(f"*DocuSign Professional:* {prof}/{seats} assentos{extra}")
-    # Microsoft 365: SKUs com tamanho relevante (>=5 assentos; ignora os triviais de
-    # 1-4 e os ilimitados de total>=1M, que só gerariam ruído).
-    for r in conn.execute("SELECT friendly_name, total, consumed FROM ms365_licenses WHERE total>=5 AND total<1000000").fetchall():
-        if r["consumed"] >= r["total"] * threshold:
-            extra = f" — ACIMA em {r['consumed'] - r['total']}" if r["consumed"] > r["total"] else ""
-            alerts.append(f"*M365 — {r['friendly_name']}:* {r['consumed']}/{r['total']}{extra}")
+    # Microsoft 365: desligado por padrão (o pedido foi receber só limites do DocuSign).
+    # Ative com ALERT_INCLUDE_M365=true. SKUs com tamanho relevante (>=5 assentos).
+    if os.getenv("ALERT_INCLUDE_M365", "false").lower() == "true":
+        for r in conn.execute("SELECT friendly_name, total, consumed FROM ms365_licenses WHERE total>=5 AND total<1000000").fetchall():
+            if r["consumed"] >= r["total"] * threshold:
+                extra = f" — ACIMA em {r['consumed'] - r['total']}" if r["consumed"] > r["total"] else ""
+                alerts.append(f"*M365 — {r['friendly_name']}:* {r['consumed']}/{r['total']}{extra}")
     return alerts
 
 @app.get("/alerts/license-status")
@@ -893,3 +899,96 @@ def alerts_license_check():
     except Exception as e:
         print(f"Erro ao notificar Google Chat: {e}")
         raise HTTPException(status_code=502, detail="Falha ao enviar notificação ao Google Chat. Veja os logs.")
+
+# ─── MOVIMENTAÇÕES DE USUÁRIOS (Google Chat) ──────────────────────────────────
+
+def _docusign_change_items(conn):
+    """Estado atual dos usuários DocuSign (por conta+e-mail) para detectar mudanças."""
+    items = []
+    for r in conn.execute("SELECT account_id, account_name, email, name, status, raw_json FROM docusign_users").fetchall():
+        email = (r["email"] or "").lower().strip()
+        if not email:
+            continue
+        raw = json.loads(r["raw_json"] or "{}")
+        prof = raw.get("permissionProfileName", "Sem Perfil")
+        name = r["name"] or email
+        items.append({
+            "key": f'{r["account_id"]}:{email}',
+            "fp": f'{r["status"]}|{prof}',      # status + perfil de permissão (a "atribuição")
+            "label": f'{name} · {r["account_name"]}',
+        })
+    return items
+
+def _diff_and_update_snapshot(conn, platform, items):
+    """Compara o estado atual com o último snapshot, atualiza-o e retorna
+    (first_run, novos, alterados, removidos). first_run=True quando não havia snapshot
+    (baseline — não notificar, senão listaria todo mundo como 'novo')."""
+    prev = {r["key"]: (r["fingerprint"], r["label"])
+            for r in conn.execute("SELECT key, fingerprint, label FROM user_snapshot WHERE platform=?", (platform,)).fetchall()}
+    first_run = len(prev) == 0
+    cur = {it["key"]: it for it in items}
+    novos = [cur[k]["label"] for k in cur if k not in prev]
+    removidos = [prev[k][1] for k in prev if k not in cur]
+    alterados = [(cur[k]["label"], prev[k][0], cur[k]["fp"]) for k in cur if k in prev and prev[k][0] != cur[k]["fp"]]
+    conn.execute("DELETE FROM user_snapshot WHERE platform=?", (platform,))
+    # usa cur.values() (dict por key) para não duplicar quando o export do DocuSign
+    # traz a mesma conta+email mais de uma vez.
+    conn.executemany("INSERT OR REPLACE INTO user_snapshot (platform, key, fingerprint, label) VALUES (?,?,?,?)",
+                     [(platform, it["key"], it["fp"], it["label"]) for it in cur.values()])
+    conn.commit()
+    return first_run, novos, alterados, removidos
+
+def _format_changes(novos, alterados, removidos, titulo, limite=20):
+    def bloco(lst, head, fmt):
+        if not lst:
+            return []
+        out = [head.format(n=len(lst))] + ["• " + fmt(x) for x in lst[:limite]]
+        if len(lst) > limite:
+            out.append(f"… e mais {len(lst) - limite}")
+        return out
+    linhas = [titulo, ""]
+    linhas += bloco(novos, "🆕 *Novos ({n}):*", lambda x: x)
+    linhas += bloco(alterados, "✏️ *Alteração de atribuição ({n}):*", lambda x: f"{x[0]}: `{x[1]}` → `{x[2]}`")
+    linhas += bloco(removidos, "🗑️ *Removidos ({n}):*", lambda x: x)
+    return "\n".join(linhas)
+
+@app.get("/alerts/changes-status")
+def alerts_changes_status():
+    """Mostra as movimentações detectadas SEM notificar e SEM atualizar o baseline."""
+    conn = get_db()
+    try:
+        items = _docusign_change_items(conn)
+        prev = {r["key"]: r["fingerprint"] for r in conn.execute("SELECT key, fingerprint FROM user_snapshot WHERE platform='docusign'").fetchall()}
+        cur = {it["key"]: it for it in items}
+        novos = [cur[k]["label"] for k in cur if k not in prev]
+        removidos = [v for k, v in [(k, None) for k in prev if k not in cur]]
+        alterados = [cur[k]["label"] for k in cur if k in prev and prev[k] != cur[k]["fp"]]
+        return {"baseline_existe": len(prev) > 0, "novos": len(novos), "alterados": len(alterados), "removidos": len([k for k in prev if k not in cur])}
+    finally:
+        conn.close()
+
+@app.post("/alerts/changes-check")
+def alerts_changes_check():
+    """Detecta movimentações de usuários do DocuSign (novos / mudança de atribuição /
+    removidos) desde a última checagem e notifica no Google Chat. Roda no sync diário."""
+    webhook = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
+    conn = get_db()
+    try:
+        items = _docusign_change_items(conn)
+        first_run, novos, alterados, removidos = _diff_and_update_snapshot(conn, "docusign", items)
+    finally:
+        conn.close()
+    resumo = {"novos": len(novos), "alterados": len(alterados), "removidos": len(removidos)}
+    if first_run:
+        return {"notified": False, "reason": "baseline criado (primeira execução)", **resumo}
+    if not (novos or alterados or removidos):
+        return {"notified": False, "reason": "sem movimentações", **resumo}
+    text = _format_changes(novos, alterados, removidos, "👤 *AccessGuard — Movimentações DocuSign*")
+    if not webhook:
+        return {"notified": False, "reason": "GOOGLE_CHAT_WEBHOOK_URL não configurado", **resumo}
+    try:
+        resp = requests.post(webhook, json={"text": text}, timeout=15)
+        return {"notified": resp.status_code == 200, "webhook_status": resp.status_code, **resumo}
+    except Exception as e:
+        print(f"Erro ao notificar movimentações no Chat: {e}")
+        raise HTTPException(status_code=502, detail="Falha ao enviar notificação ao Google Chat.")

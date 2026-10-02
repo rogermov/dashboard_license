@@ -173,6 +173,22 @@ scp -i accessguard-key.pem /tmp/restore.db ubuntu@<IP>:/opt/accessguard/data/acc
 ssh -i accessguard-key.pem ubuntu@<IP> 'cd /opt/accessguard && docker compose -f docker-compose.aws.yml restart backend'
 ```
 
+## Automações (cron) — ATENÇÃO ao horário vs scheduler
+
+A instância fica ligada só **07h–20h BRT, seg–sex** (scheduler). O SO está em **UTC**,
+então essa janela é **10h–23h UTC**. Qualquer cron **fora** dessa janela **nunca roda**
+(a máquina está desligada). Os horários abaixo já respeitam isso:
+
+| Cron (`/etc/cron.d/`) | Horário (UTC) | BRT | O quê |
+|---|---|---|---|
+| `accessguard-sync` | `30 10 * * 1-5` | 07:30 | Sync completo (DocuSign+M365+Google) + alertas de licença (`daily_sync.sh`) |
+| `accessguard-live-check` | `*/15 10-22 * * 1-5` | a cada 15 min | Movimentações de usuários DocuSign → Google Chat (`docusign_live_check.sh`) |
+| `accessguard-backup` | `30 22 * * 1-5` | 19:30 | Backup do SQLite pro S3 (`backup_to_s3.sh`) |
+
+> O usuário `ubuntu` **não escreve em `/var/log`** — logs vão para `/opt/accessguard/*.log`.
+> O `sync` e o `live-check` são instalados **após o deploy** (os scripts ficam em
+> `/opt/accessguard`); o `backup` é instalado pelo `user_data` no primeiro boot.
+
 ## Custos — o que observar
 
 - **EIP / IPv4**: desde fev/2024 a AWS cobra por todo IP público (~US$0,005/h ≈

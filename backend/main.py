@@ -967,6 +967,55 @@ def alerts_changes_status():
     finally:
         conn.close()
 
+@app.post("/alerts/docusign-live-check")
+def alerts_docusign_live_check():
+    """Opção 2 (near real-time): atualiza SÓ os usuários do DocuSign via API leve por
+    conta (get_users_for_account, sem o export pesado de licenças) e checa movimentações,
+    notificando no Chat. Feito para rodar com frequência (ex.: a cada 15 min) sem
+    sobrecarregar a API. A contagem de licenças continua vindo do sync completo diário."""
+    config = get_config()
+    token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
+    conn = get_db()
+    try:
+        for acc in config["accounts"]:
+            if not acc["id"]:
+                continue
+            try:
+                users = get_users_for_account(acc, token)
+                conn.execute("DELETE FROM docusign_users WHERE account_id=?", (acc["id"],))
+                for u in users:
+                    email = str(u.get("email", "")).lower().strip()
+                    name = str(u.get("userName", "")).strip()
+                    s_raw = str(u.get("userStatus", "Active")).lower().strip()
+                    status = "active" if s_raw in ("active", "ativo") else ("closed" if s_raw == "closed" else "pending")
+                    conn.execute("INSERT INTO docusign_users (account_id, account_name, email, name, status, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                                 (acc["id"], acc["name"], email, name, status, json.dumps(u)))
+                conn.execute("INSERT INTO docusign_sync_log (account_id, account_name, synced_at, error) VALUES (?, ?, CURRENT_TIMESTAMP, NULL) ON CONFLICT(account_id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL",
+                             (acc["id"], acc["name"]))
+            except Exception as e:
+                print(f"[live-check] erro na conta {acc['name']}: {e}")
+                conn.execute("INSERT INTO docusign_sync_log (account_id, account_name, error) VALUES (?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET error=?", (acc["id"], acc["name"], str(e), str(e)))
+        conn.commit()
+        items = _docusign_change_items(conn)
+        first_run, novos, alterados, removidos = _diff_and_update_snapshot(conn, "docusign", items)
+    finally:
+        conn.close()
+    resumo = {"novos": len(novos), "alterados": len(alterados), "removidos": len(removidos)}
+    if first_run:
+        return {"notified": False, "reason": "baseline criado (primeira execução)", **resumo}
+    if not (novos or alterados or removidos):
+        return {"notified": False, "reason": "sem movimentações", **resumo}
+    webhook = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
+    text = _format_changes(novos, alterados, removidos, "👤 *AccessGuard — Movimentações DocuSign*")
+    if not webhook:
+        return {"notified": False, "reason": "GOOGLE_CHAT_WEBHOOK_URL não configurado", **resumo}
+    try:
+        resp = requests.post(webhook, json={"text": text}, timeout=15)
+        return {"notified": resp.status_code == 200, "webhook_status": resp.status_code, **resumo}
+    except Exception as e:
+        print(f"Erro ao notificar movimentações no Chat: {e}")
+        raise HTTPException(status_code=502, detail="Falha ao enviar notificação ao Google Chat.")
+
 @app.post("/alerts/changes-check")
 def alerts_changes_check():
     """Detecta movimentações de usuários do DocuSign (novos / mudança de atribuição /

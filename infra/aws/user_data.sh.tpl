@@ -45,8 +45,12 @@ mkdir -p /opt/${project_name}/data
 chown -R ubuntu:ubuntu /opt/${project_name}
 
 # ── Backup diário do SQLite para S3 (o deploy.sh copia este script real; aqui só o cron) ──
+# IMPORTANTE: horário em UTC e DENTRO da janela em que o scheduler mantém a instância
+# ligada (07h-20h BRT = 10h-23h UTC, seg-sex). 22:30 UTC = 19:30 BRT — captura o dia
+# antes do desligamento das 20h. Crons fora dessa janela NUNCA rodam (máquina off).
+# Log em /opt (o usuário ubuntu não tem permissão de escrita em /var/log).
 cat > /etc/cron.d/${project_name}-backup <<'CRON'
-0 6 * * * ubuntu /opt/${project_name}/backup_to_s3.sh >> /var/log/${project_name}-backup.log 2>&1
+30 22 * * 1-5 ubuntu /opt/${project_name}/backup_to_s3.sh >> /opt/${project_name}/backup.log 2>&1
 CRON
 
 echo "Bootstrap concluído." > /var/log/${project_name}-bootstrap-done.log

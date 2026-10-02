@@ -25,7 +25,7 @@ export default function Licenses(){
     </div>
     <ErrorBanner message={error} onRetry={load}/>
     {data&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:'0.75rem',marginBottom:'1.5rem'}}>
-      {platforms.map(p=><div key={p} onClick={()=>setSel(sel===p?'all':p)} style={{background:sel===p?`${PC[p]}12`:'var(--bg2)',border:`1px solid ${sel===p?PC[p]:'var(--border)'}`,borderRadius:'var(--radius)',padding:'0.9rem 1rem',cursor:'pointer',boxShadow:'var(--shadow-sm)',borderTop:`3px solid ${PC[p]||'var(--accent)'}`}}>
+      {platforms.map(p=><div key={p} role="button" tabIndex={0} aria-pressed={sel===p} onClick={()=>setSel(sel===p?'all':p)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSel(sel===p?'all':p);}}} style={{background:sel===p?`${PC[p]}12`:'var(--bg2)',border:`1px solid ${sel===p?PC[p]:'var(--border)'}`,borderRadius:'var(--radius)',padding:'0.9rem 1rem',cursor:'pointer',boxShadow:'var(--shadow-sm)',borderTop:`3px solid ${PC[p]||'var(--accent)'}`}}>
         <div style={{fontSize:'0.7rem',fontWeight:600,color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.6,marginBottom:'0.4rem'}}>{PL[p]||p}</div>
         <div style={{fontSize:'1.6rem',fontWeight:700,color:PC[p]||'var(--text)',lineHeight:1}}>{(totalByPlatform[p]||0).toLocaleString()}</div>
         <div style={{fontSize:'0.68rem',color:'var(--text3)',marginTop:'0.25rem'}}>usuários</div>

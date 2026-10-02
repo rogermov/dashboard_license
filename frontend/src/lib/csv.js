@@ -8,11 +8,17 @@ export function exportCSV(data, filename) {
   const rows = data.map(row =>
     headers.map(k => `"${(row[k] ?? '').toString().replace(/"/g, '""')}"`).join(',')
   );
-  const blob = new Blob([[headers.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+  // BOM (﻿) para o Excel abrir acentos corretamente.
+  const blob = new Blob(['﻿' + [headers.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  // Precisa estar no DOM para o .click() disparar o download em alguns navegadores
+  // (Firefox e certos Chrome ignoram click em elemento solto) — era o motivo de
+  // o botão "CSV P/ Migração" não baixar.
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }

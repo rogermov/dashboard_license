@@ -4,6 +4,7 @@ import { api } from '../hooks/api.js';
 import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
+import ErrorBanner from '../components/ErrorBanner.jsx';
 
 export default function Microsoft365() {
   const [status, setStatus] = useState(null);
@@ -15,20 +16,22 @@ export default function Microsoft365() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterLicense, setFilterLicense] = useState('');
+  const [error, setError] = useState(null);
   const { toast, showToast } = useToast();
 
   const loadStatus = async () => { setLoading(true); try { setStatus(await api.get('/microsoft365/status', { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
   const loadLicenses = async () => { try { setLicenses(await api.get('/microsoft365/licenses', { noCache: true })); } catch { setLicenses([]); } };
 
   const loadUsers = async () => {
-    setUsersLoading(true);
+    setUsersLoading(true); setError(null);
     try {
       const p = new URLSearchParams();
       if (filterStatus) p.append('status', filterStatus);
       if (filterLicense) p.append('license', filterLicense);
       if (search) p.append('search', search);
       setUsers(await api.get(`/microsoft365/users?${p}`, { noCache: true }));
-    } catch {
+    } catch (e) {
+      setError(e.message || 'Erro ao carregar os usuários.');
       setUsers([]);
     } finally {
       setUsersLoading(false);
@@ -64,6 +67,7 @@ export default function Microsoft365() {
   return (
     <div style={{ animation: 'fadeIn 0.3s ease' }}>
       <Toast toast={toast} />
+      <ErrorBanner message={error} onRetry={loadUsers} />
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>Microsoft 365</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Gestão de acessos e licenças do tenant</p></div>

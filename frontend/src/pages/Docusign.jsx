@@ -4,6 +4,7 @@ import { api } from '../hooks/api.js';
 import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
+import ErrorBanner from '../components/ErrorBanner.jsx';
 
 const SM = { active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, pending: { label: 'Pendente', color: 'var(--yellow)', bg: 'var(--yellow-bg)' } };
 
@@ -40,8 +41,9 @@ export default function Docusign() {
   const [envFilterPerm, setEnvFilterPerm] = useState(''); 
 
   const { toast, showToast } = useToast();
+  const [error, setError] = useState(null);
 
-  const loadStatus = async () => { setLoading(true); try { setStatus(await api.get('/docusign/status', { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
+  const loadStatus = async () => { setLoading(true); setError(null); try { setStatus(await api.get('/docusign/status', { noCache: true })); } catch (e) { setError(e.message || 'Erro ao carregar o status do DocuSign.'); } finally { setLoading(false); } };
   
   const loadUsers = async () => { 
     setUsersLoading(true); 
@@ -137,6 +139,7 @@ export default function Docusign() {
   return (
     <div style={{ animation: 'fadeIn 0.3s ease' }}>
       <Toast toast={toast} />
+      <ErrorBanner message={error} onRetry={loadStatus} />
       
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
         <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>DocuSign</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Gestão de acessos e volume de uso</p></div>

@@ -5,9 +5,10 @@ import {RefreshCw,Download,Building2} from 'lucide-react';
 import {api} from '../hooks/api.js';
 import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
 import { exportCSV } from '../lib/csv.js';
+import ErrorBanner from '../components/ErrorBanner.jsx';
 export default function Licenses(){
-  const[data,setData]=useState(null);const[loading,setLoading]=useState(true);const[sel,setSel]=useState('all');
-  const load=async()=>{setLoading(true);try{setData(await api.get('/licenses/by-domain',{noCache:true}));}catch{setData(null);}finally{setLoading(false);}}; 
+  const[data,setData]=useState(null);const[loading,setLoading]=useState(true);const[sel,setSel]=useState('all');const[error,setError]=useState(null);
+  const load=async()=>{setLoading(true);setError(null);try{setData(await api.get('/licenses/by-domain',{noCache:true}));}catch(e){setError(e.message||'Erro ao carregar as licenças.');setData(null);}finally{setLoading(false);}};
   useEffect(()=>{load();},[]);
   const domains=data?Object.keys(data.by_domain).sort((a,b)=>{const ta=Object.values(data.by_domain[a]).reduce((s,v)=>s+v,0);const tb=Object.values(data.by_domain[b]).reduce((s,v)=>s+v,0);return tb-ta;}):[];
   const platforms=data?data.platforms:[];const active=sel==='all'?platforms:[sel];
@@ -22,6 +23,7 @@ export default function Licenses(){
         <button onClick={load} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.5rem 1rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text2)',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)'}}><RefreshCw size={13}/>Atualizar</button>
       </div>
     </div>
+    <ErrorBanner message={error} onRetry={load}/>
     {data&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:'0.75rem',marginBottom:'1.5rem'}}>
       {platforms.map(p=><div key={p} onClick={()=>setSel(sel===p?'all':p)} style={{background:sel===p?`${PC[p]}12`:'var(--bg2)',border:`1px solid ${sel===p?PC[p]:'var(--border)'}`,borderRadius:'var(--radius)',padding:'0.9rem 1rem',cursor:'pointer',boxShadow:'var(--shadow-sm)',borderTop:`3px solid ${PC[p]||'var(--accent)'}`}}>
         <div style={{fontSize:'0.7rem',fontWeight:600,color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.6,marginBottom:'0.4rem'}}>{PL[p]||p}</div>

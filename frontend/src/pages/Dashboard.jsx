@@ -5,6 +5,7 @@ import { AlertTriangle, Users, Shield, RefreshCw, TrendingUp, Activity } from 'l
 import { api } from '../hooks/api.js';
 import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
 import RiskBadge from '../components/RiskBadge.jsx';
+import ErrorBanner from '../components/ErrorBanner.jsx';
 function StatCard({label,value,sub,color,icon:Icon,loading}){
   return(<div style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'1.25rem 1.5rem',boxShadow:'var(--shadow-sm)',borderTop:`3px solid ${color||'var(--accent)'}`}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
@@ -18,8 +19,8 @@ function StatCard({label,value,sub,color,icon:Icon,loading}){
   </div>);
 }
 export default function Dashboard(){
-  const[stats,setStats]=useState(null);const[risk,setRisk]=useState([]);const[loading,setLoading]=useState(true);
-  const load=async()=>{setLoading(true);try{const[s,r]=await Promise.all([api.get('/stats',{noCache:true}),api.get('/users/risk',{noCache:true})]);setStats(s);setRisk(r.slice(0,10));}catch(e){console.error(e);}finally{setLoading(false);}};
+  const[stats,setStats]=useState(null);const[risk,setRisk]=useState([]);const[loading,setLoading]=useState(true);const[error,setError]=useState(null);
+  const load=async()=>{setLoading(true);setError(null);try{const[s,r]=await Promise.all([api.get('/stats',{noCache:true}),api.get('/users/risk',{noCache:true})]);setStats(s);setRisk(r.slice(0,10));}catch(e){setError(e.message||'Erro ao carregar o dashboard.');}finally{setLoading(false);}};
   useEffect(()=>{load();},[]);
 const handleClearTerminated = async () => {
     if (!window.confirm("Tem certeza que deseja limpar a lista de desligados? As contas nas plataformas não serão afetadas.")) return;
@@ -47,6 +48,7 @@ const handleClearTerminated = async () => {
         </button>
       </div>
     </div>
+    <ErrorBanner message={error} onRetry={load}/>
     <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem',marginBottom:'1.5rem'}}>
       <StatCard label="Desligados na base" icon={Users} loading={loading} value={stats?.total_terminated??0} sub="total importado do RH" color="var(--blue-500)"/>
       <StatCard label="Com acesso ativo" icon={AlertTriangle} loading={loading} value={stats?.terminated_with_active_access??0} sub="requerem atenção" color="var(--red)"/>

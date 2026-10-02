@@ -4,6 +4,7 @@ import { api } from '../hooks/api.js';
 import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
+import ErrorBanner from '../components/ErrorBanner.jsx';
 
 const SM = {
   active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' },
@@ -14,6 +15,7 @@ export default function Google() {
   const [users, setUsers] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [usersLoading, setUsersLoading] = useState(false);
+  const [error, setError] = useState(null);
   const { toast, showToast } = useToast();
 
   // Filtros e Paginação
@@ -24,12 +26,12 @@ export default function Google() {
   const itemsPerPage = 50; // Quantidade de usuários por página
 
   // Agora puxamos todos de uma vez para paginar no frontend de forma instantânea
-  const loadUsers = async () => { 
-    setUsersLoading(true); 
-    try { 
+  const loadUsers = async () => {
+    setUsersLoading(true); setError(null);
+    try {
       const res = await api.get(`/google/users`, { noCache: true });
       setUsers(res);
-    } catch { setUsers([]); } finally { setUsersLoading(false); } 
+    } catch (e) { setError(e.message || 'Erro ao carregar o diretório.'); setUsers([]); } finally { setUsersLoading(false); }
   };
 
   useEffect(() => { loadUsers(); }, []);
@@ -69,7 +71,8 @@ export default function Google() {
   return (
     <div style={{ animation: 'fadeIn 0.3s ease' }}>
       <Toast toast={toast} />
-      
+      <ErrorBanner message={error} onRetry={loadUsers} />
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
         <div>
           <h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>Google Workspace</h1>

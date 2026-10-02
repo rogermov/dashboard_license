@@ -5,9 +5,10 @@ import {api} from '../hooks/api.js';
 import { PLATFORMS, PLATFORM_LABELS as PL, PLATFORM_COLORS as PC } from '../lib/platforms.js';
 import { exportCSV } from '../lib/csv.js';
 import RiskBadge from '../components/RiskBadge.jsx';
+import ErrorBanner from '../components/ErrorBanner.jsx';
 export default function Users(){
-  const[tab,setTab]=useState('risk');const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');const[data,setData]=useState([]);const[loading,setLoading]=useState(false);const[azureList,setAzureList]=useState([]);const[azureLoading,setAzureLoading]=useState(false);
-  const load=async()=>{setLoading(true);try{const p=new URLSearchParams();if(search)p.append('search',search);if(platform)p.append('platform',platform);const ep=tab==='risk'?'/users/risk':'/users/terminated';setData(await api.get(`${ep}?${p}`,{noCache:true}));}catch{setData([]);}finally{setLoading(false);}}
+  const[tab,setTab]=useState('risk');const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');const[data,setData]=useState([]);const[loading,setLoading]=useState(false);const[azureList,setAzureList]=useState([]);const[azureLoading,setAzureLoading]=useState(false);const[error,setError]=useState(null);
+  const load=async()=>{setLoading(true);setError(null);try{const p=new URLSearchParams();if(search)p.append('search',search);if(platform)p.append('platform',platform);const ep=tab==='risk'?'/users/risk':'/users/terminated';setData(await api.get(`${ep}?${p}`,{noCache:true}));}catch(e){setError(e.message||'Erro ao carregar usuários.');setData([]);}finally{setLoading(false);}}
   const loadAzure=async()=>{setAzureLoading(true);try{const r=await api.get('/users/risk',{noCache:true});setAzureList(r.map(u=>({email:u.email,nome:u.name||'',departamento:u.department||'',plataformas:(u.active_platforms||[]).join('; ')})));}catch{setAzureList([]);}finally{setAzureLoading(false);}};
   useEffect(()=>{load();},[tab,platform]);
   return<div style={{animation:'fadeIn 0.3s ease'}}>
@@ -27,6 +28,7 @@ export default function Users(){
       <div style={{padding:'0.65rem 1rem',borderTop:'1px solid var(--border)',fontSize:'0.72rem',color:'var(--text3)'}}>{azureList.length} contas</div>
     </div>}
     {tab!=='azure'&&<>
+      <ErrorBanner message={error} onRetry={load}/>
       <div style={{display:'flex',gap:'0.6rem',marginBottom:'1rem'}}>
         <div style={{position:'relative',flex:1}}><Search size={14} color="var(--text3)" style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)'}}/><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder="Buscar por e-mail ou nome..." style={{width:'100%',padding:'0.6rem 0.75rem 0.6rem 2.1rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text)',fontSize:'0.82rem',outline:'none',boxShadow:'var(--shadow-sm)'}} onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>
         {tab==='risk'&&<select value={platform} onChange={e=>setPlatform(e.target.value)} style={{padding:'0.6rem 0.75rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text)',fontSize:'0.82rem',outline:'none',boxShadow:'var(--shadow-sm)'}}><option value="">Todas plataformas</option>{PLATFORMS.map(p=><option key={p} value={p}>{PL[p]}</option>)}</select>}

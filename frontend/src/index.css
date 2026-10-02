@@ -18,5 +18,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 ::-webkit-scrollbar-track{background:var(--bg3);}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
 button,input,select,textarea{font-family:var(--font);}
+/* Acessibilidade: anel de foco visível só na navegação por teclado (não atrapalha
+   o mouse). !important porque vários inputs tinham outline:none inline. */
+:focus-visible{outline:2px solid var(--accent) !important;outline-offset:2px;border-radius:4px;}
+a{color:var(--accent);}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}

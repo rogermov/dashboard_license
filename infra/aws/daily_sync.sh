@@ -32,5 +32,6 @@ run "Microsoft 365"  "microsoft365/sync"
 run "Google"         "google/sync"
 # Depois de atualizar os dados, checa limites e notifica no Google Chat se preciso
 # (só envia se GOOGLE_CHAT_WEBHOOK_URL estiver configurado no .env).
-run "Alerta de licencas" "alerts/license-check"
+run "Alerta de licencas"        "alerts/license-check"
+run "Movimentacoes de usuarios" "alerts/changes-check"
 echo "[$(date -Is)] sync diário concluído" >> "$LOG"

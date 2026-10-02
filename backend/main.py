@@ -903,7 +903,9 @@ def alerts_license_check():
 # ─── MOVIMENTAÇÕES DE USUÁRIOS (Google Chat) ──────────────────────────────────
 
 def _docusign_change_items(conn):
-    """Estado atual dos usuários DocuSign (por conta+e-mail) para detectar mudanças."""
+    """Estado atual dos usuários DocuSign (por conta+e-mail) para detectar mudanças.
+    A 'impressão digital' inclui status + perfil + licença (estimada por canSendEnvelope,
+    que vem na API leve de usuários) — assim um downgrade Professional→Free é detectado."""
     items = []
     for r in conn.execute("SELECT account_id, account_name, email, name, status, raw_json FROM docusign_users").fetchall():
         email = (r["email"] or "").lower().strip()
@@ -911,13 +913,27 @@ def _docusign_change_items(conn):
             continue
         raw = json.loads(r["raw_json"] or "{}")
         prof = raw.get("permissionProfileName", "Sem Perfil")
+        can_send = raw.get("userSettings", {}).get("canSendEnvelope") in ("true", True)
+        lic = "Professional" if can_send else "Free"
         name = r["name"] or email
         items.append({
             "key": f'{r["account_id"]}:{email}',
-            "fp": f'{r["status"]}|{prof}',      # status + perfil de permissão (a "atribuição")
+            "fp": f'{r["status"]}|{prof}|{lic}',   # status | perfil de permissão | licença
             "label": f'{name} · {r["account_name"]}',
         })
     return items
+
+def _describe_change(old_fp, new_fp):
+    """Descreve, de forma legível, o que mudou entre duas impressões digitais."""
+    campos = ["status", "perfil", "licença"]
+    o, n = old_fp.split("|"), new_fp.split("|")
+    difs = []
+    for i, c in enumerate(campos):
+        ov = o[i] if i < len(o) else ""
+        nv = n[i] if i < len(n) else ""
+        if ov != nv:
+            difs.append(f"{c}: {ov} → {nv}")
+    return "; ".join(difs) if difs else "alterado"
 
 def _diff_and_update_snapshot(conn, platform, items):
     """Compara o estado atual com o último snapshot, atualiza-o e retorna
@@ -948,7 +964,7 @@ def _format_changes(novos, alterados, removidos, titulo, limite=20):
         return out
     linhas = [titulo, ""]
     linhas += bloco(novos, "🆕 *Novos ({n}):*", lambda x: x)
-    linhas += bloco(alterados, "✏️ *Alteração de atribuição ({n}):*", lambda x: f"{x[0]}: `{x[1]}` → `{x[2]}`")
+    linhas += bloco(alterados, "✏️ *Alteração de atribuição ({n}):*", lambda x: f"{x[0]} — {_describe_change(x[1], x[2])}")
     linhas += bloco(removidos, "🗑️ *Removidos ({n}):*", lambda x: x)
     return "\n".join(linhas)
 

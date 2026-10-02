@@ -15,6 +15,12 @@ IP=$(terraform output -raw public_ip)
 KEY=$(terraform output -raw private_key_path)
 SSH_OPTS="-i $KEY -o StrictHostKeyChecking=accept-new"
 
+# Build do frontend é feito AQUI (local), não no servidor: o t3.micro (1GB RAM)
+# não aguenta o vite build (trava por falta de memória). Enviamos o ./build pronto
+# e o nginx só serve o estático (ver frontend/Dockerfile). Requer Node/npm local.
+echo "==> Buildando o frontend localmente..."
+( cd "$PROJECT_ROOT/frontend" && npm ci && npm run build )
+
 echo "==> Enviando código atualizado para $IP (sem tocar em .env/secrets/data)..."
 tar czf - -C "$PROJECT_ROOT" \
   --exclude='.git' --exclude='node_modules' --exclude='__pycache__' \

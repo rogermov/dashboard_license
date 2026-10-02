@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { AlertTriangle, Users, Shield, RefreshCw, TrendingUp, Activity } from 'lucide-react';
+import { AlertTriangle, Users, Shield, RefreshCw, TrendingUp, Activity, BadgeCheck } from 'lucide-react';
 import { api } from '../hooks/api.js';
 import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
 import RiskBadge from '../components/RiskBadge.jsx';
@@ -19,8 +19,21 @@ function StatCard({label,value,sub,color,icon:Icon,loading}){
   </div>);
 }
 export default function Dashboard(){
-  const[stats,setStats]=useState(null);const[risk,setRisk]=useState([]);const[loading,setLoading]=useState(true);const[error,setError]=useState(null);
-  const load=async()=>{setLoading(true);setError(null);try{const[s,r]=await Promise.all([api.get('/stats',{noCache:true}),api.get('/users/risk',{noCache:true})]);setStats(s);setRisk(r.slice(0,10));}catch(e){setError(e.message||'Erro ao carregar o dashboard.');}finally{setLoading(false);}};
+  const[stats,setStats]=useState(null);const[risk,setRisk]=useState([]);const[loading,setLoading]=useState(true);const[error,setError]=useState(null);const[licHealth,setLicHealth]=useState([]);
+  const load=async()=>{
+    setLoading(true);setError(null);
+    try{const[s,r]=await Promise.all([api.get('/stats',{noCache:true}),api.get('/users/risk',{noCache:true})]);setStats(s);setRisk(r.slice(0,10));}catch(e){setError(e.message||'Erro ao carregar o dashboard.');}finally{setLoading(false);}
+    // Saúde de licenças — agrega assentos do DocuSign + SKUs do M365. Não bloqueia o
+    // dashboard se qualquer uma falhar (cada chamada tem seu proprio catch).
+    try{
+      const[ds,m365]=await Promise.all([api.get('/docusign/status',{noCache:true}).catch(()=>null),api.get('/microsoft365/licenses',{noCache:true}).catch(()=>null)]);
+      const items=[];
+      const seats=ds?.license_summary?.included_seats;
+      if(seats){items.push({name:'DocuSign — Professional',used:ds.license_summary.professional,total:seats});}
+      (m365||[]).forEach(l=>{if(l.total>0&&l.total<1000000)items.push({name:l.friendly_name,used:l.consumed,total:l.total});});
+      setLicHealth(items);
+    }catch{/* mantem o que ja tem */}
+  };
   useEffect(()=>{load();},[]);
 const handleClearTerminated = async () => {
     if (!window.confirm("Tem certeza que deseja limpar a lista de desligados? As contas nas plataformas não serão afetadas.")) return;
@@ -54,6 +67,26 @@ const handleClearTerminated = async () => {
       <StatCard label="Com acesso ativo" icon={AlertTriangle} loading={loading} value={stats?.terminated_with_active_access??0} sub="requerem atenção" color="var(--red)"/>
       <StatCard label="Usuários Azure" icon={Activity} loading={loading} value={stats?.total_azure_users??0} sub="base para cruzamento" color="var(--blue-400)"/>
     </div>
+    {licHealth.length>0&&(()=>{
+      const withPct=licHealth.map(l=>({...l,ratio:l.total>0?l.used/l.total:0}));
+      const alerts=withPct.filter(l=>l.ratio>=0.9).sort((a,b)=>b.ratio-a.ratio);
+      return <div style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'1.5rem',boxShadow:'var(--shadow-sm)',marginBottom:'1.25rem'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:alerts.length?'1rem':0}}>
+          <div style={{display:'flex',alignItems:'center',gap:'0.5rem'}}><BadgeCheck size={15} color="var(--accent)"/><h2 style={{fontSize:'0.82rem',fontWeight:600,color:'var(--text)',textTransform:'uppercase',letterSpacing:0.8}}>Saúde de Licenças</h2></div>
+          <span style={{fontSize:'0.75rem',fontWeight:600,color:alerts.length?'var(--red)':'var(--green)'}}>{alerts.length?`⚠ ${alerts.length} perto/acima do limite`:`✓ ${withPct.length} licenças dentro do limite`}</span>
+        </div>
+        {alerts.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:'0.75rem'}}>
+          {alerts.map((l,i)=>{const over=l.used>l.total;const color=over?'var(--red)':'var(--yellow)';return(
+            <div key={i} style={{border:`1px solid ${color}`,borderRadius:'var(--radius)',padding:'0.75rem 0.9rem',background:over?'var(--red-bg)':'var(--yellow-bg)'}}>
+              <div title={l.name} style={{fontSize:'0.75rem',fontWeight:600,marginBottom:'0.35rem',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{l.name}</div>
+              <div style={{fontSize:'0.95rem',fontWeight:700,color:'var(--text)'}}>{l.used} <span style={{fontSize:'0.72rem',fontWeight:500,color:'var(--text3)'}}>/ {l.total}</span></div>
+              <div style={{height:4,background:'var(--border)',borderRadius:2,marginTop:'0.4rem',overflow:'hidden'}}><div style={{height:'100%',width:`${Math.min(100,l.ratio*100)}%`,background:color}}/></div>
+              <div style={{fontSize:'0.64rem',fontWeight:600,color,marginTop:'0.3rem'}}>{over?`${l.used-l.total} acima do limite`:'perto do limite (90%+)'}</div>
+            </div>
+          );})}
+        </div>}
+      </div>;
+    })()}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1.25rem',marginBottom:'1.25rem'}}>
       <div style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'1.5rem',boxShadow:'var(--shadow-sm)'}}>
         <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginBottom:'1.25rem'}}><TrendingUp size={15} color="var(--accent)"/><h2 style={{fontSize:'0.82rem',fontWeight:600,color:'var(--text)',textTransform:'uppercase',letterSpacing:0.8}}>Exposição por Plataforma</h2></div>

@@ -16,6 +16,8 @@ def to_brt(utc_str):
 
 from docusign_integration import get_config, get_jwt_token, get_users_for_account, get_envelopes_count, generate_admin_consent_url, get_included_seats, sync_real_licenses
 from graph_integration import get_config as get_graph_config, get_graph_token, get_users as get_graph_users, get_subscribed_skus, sku_friendly_name
+from pydantic import BaseModel
+import offboarding
 
 load_dotenv()
 
@@ -107,6 +109,21 @@ def init_db():
         platform TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT, label TEXT,
         PRIMARY KEY(platform, key))""")
 
+    # ─── Offboarding (motor de identidade, ver offboarding.py) ───
+    c.execute("""CREATE TABLE IF NOT EXISTS hr_terminations (
+        matricula TEXT PRIMARY KEY, name TEXT, company TEXT, cargo TEXT, termination_date TEXT,
+        email_rh TEXT, motivo TEXT, rehire_status TEXT, rehire_detail TEXT,
+        match_status TEXT, match_detail TEXT, source TEXT,
+        imported_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS offboarding_matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, matricula TEXT, person_name TEXT, company TEXT,
+        termination_date TEXT, platform TEXT, account_email TEXT, account_name TEXT,
+        account_status TEXT, confidence TEXT, method TEXT, detail TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS offboarding_decisions (
+        matricula TEXT NOT NULL, platform TEXT NOT NULL, account_email TEXT NOT NULL,
+        decision TEXT NOT NULL, decided_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(matricula, platform, account_email))""")
+
     for sql in [
         "CREATE INDEX IF NOT EXISTS idx_terminated_email ON terminated_users(email)",
         "CREATE INDEX IF NOT EXISTS idx_platform_email ON platform_users(email)",
@@ -118,7 +135,10 @@ def init_db():
     ]:
         c.execute(sql)
 
-    for col_sql in ["ALTER TABLE platform_users ADD COLUMN display_name TEXT"]:
+    for col_sql in ["ALTER TABLE platform_users ADD COLUMN display_name TEXT",
+                    "ALTER TABLE ms365_users ADD COLUMN employee_id TEXT",   # matrícula SAP
+                    "ALTER TABLE ms365_users ADD COLUMN aliases TEXT",
+                    "CREATE INDEX IF NOT EXISTS idx_ms365_employee ON ms365_users(employee_id)"]:
         try: c.execute(col_sql)
         except: pass
     conn.commit()
@@ -189,60 +209,66 @@ def health(): return {"status":"ok","timestamp":datetime.now().isoformat()}
 def get_stats():
     conn = get_db()
     try:
-        total_terminated = conn.execute("SELECT COUNT(*) FROM terminated_users").fetchone()[0]
-        total_azure = conn.execute("SELECT COUNT(*) FROM azure_users").fetchone()[0]
-        # e-mails são gravados sempre normalizados (minúsculas) por normalize_email, então
-        # o LOWER() dos dois lados do JOIN era redundante e impedia o uso dos índices de
-        # e-mail (forçava full scan). get_risk_users já junta direto por p.email=t.email.
-        terminated_with_access = conn.execute("""SELECT COUNT(DISTINCT p.email) FROM platform_users p INNER JOIN terminated_users t ON p.email = t.email""").fetchone()[0]
-        exposure_rows = conn.execute("""SELECT p.platform, COUNT(*) as count FROM platform_users p INNER JOIN terminated_users t ON p.email = t.email GROUP BY p.platform""").fetchall()
-        exposure_by_platform = {r["platform"]: r["count"] for r in exposure_rows}
+        total = conn.execute("SELECT COUNT(*) FROM hr_terminations").fetchone()[0]
+        st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
+        exposure = conn.execute("SELECT platform, COUNT(DISTINCT matricula) AS count FROM offboarding_matches "
+                                "WHERE confidence='agir' GROUP BY platform").fetchall()
         platform_rows = conn.execute("SELECT platform, COUNT(*) as count FROM platform_users GROUP BY platform").fetchall()
-        platform_users_total = {r["platform"]: r["count"] for r in platform_rows}
         return {
-            "total_terminated": total_terminated,
-            "terminated_with_active_access": terminated_with_access,
-            "total_azure_users": total_azure,
-            "exposure_by_platform": exposure_by_platform,
-            "platform_users": platform_users_total
+            "total_terminated": total,
+            "terminated_with_active_access": st.get("agir", 0),   # certeza total (agir)
+            "to_review": st.get("revisar", 0),
+            "rehired": st.get("recontratado", 0),
+            "no_account": st.get("sem_conta", 0),
+            "exposure_by_platform": {r["platform"]: r["count"] for r in exposure},
+            "platform_users": {r["platform"]: r["count"] for r in platform_rows},
         }
     finally:
         conn.close()
 
 @app.get("/users/risk")
 def get_risk_users(search: str="", platform: str=""):
+    """Desligados com acesso ativo CONFIRMADO (matrícula, e-mail do RH ou revisão aprovada)."""
     conn = get_db()
     try:
-        c = conn.cursor()
-        query = """SELECT t.email,t.name,t.department,t.termination_date, GROUP_CONCAT(DISTINCT pu.platform) as active_platforms FROM terminated_users t INNER JOIN platform_users pu ON t.email=pu.email WHERE 1=1"""
+        q = "SELECT * FROM offboarding_matches WHERE confidence='agir'"
         params = []
         if search:
-            query += " AND (LOWER(t.email) LIKE ? OR LOWER(t.name) LIKE ?)"
-            params += [f"%{search.lower()}%",f"%{search.lower()}%"]
-        if platform:
-            query += " AND pu.platform=?"; params.append(platform)
-        query += " GROUP BY t.email ORDER BY t.termination_date DESC"
-        rows = c.execute(query,params).fetchall()
+            q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
+            params += [f"%{search.lower()}%"] * 3
+        rows = conn.execute(q + " ORDER BY termination_date DESC, person_name", params).fetchall()
     finally:
         conn.close()
-    result = []
+    people = {}
     for r in rows:
-        plats = r["active_platforms"].split(",") if r["active_platforms"] else []
-        result.append({"email":r["email"],"name":r["name"] or r["email"],"department":r["department"],
-                       "termination_date":r["termination_date"],"active_platforms":plats,
-                       "risk_level":"high" if len(plats)>=3 else "medium" if plats else "low"})
+        p = people.setdefault(r["matricula"], {
+            "matricula": r["matricula"], "email": r["account_email"], "name": r["person_name"],
+            "department": r["company"], "termination_date": r["termination_date"],
+            "active_platforms": [], "accounts": []})
+        if r["platform"] == "365":
+            p["email"] = r["account_email"]
+        if r["platform"] not in p["active_platforms"]:
+            p["active_platforms"].append(r["platform"])
+        p["accounts"].append({"platform": r["platform"], "email": r["account_email"],
+                              "name": r["account_name"], "method": r["method"]})
+    result = [p for p in people.values() if not platform or platform in p["active_platforms"]]
+    for p in result:
+        n = len(p["active_platforms"])
+        p["risk_level"] = "high" if n >= 3 else "medium" if n else "low"
     return result
 
 @app.get("/users/terminated")
 def get_all_terminated(search: str=""):
+    """Todos os desligados importados, com o resultado do cruzamento."""
     conn = get_db()
     try:
-        c = conn.cursor()
+        q = ("SELECT matricula, name, company AS department, cargo, termination_date, email_rh AS email, "
+             "match_status, match_detail, rehire_status, imported_at FROM hr_terminations")
+        params = []
         if search:
-            rows = c.execute("SELECT * FROM terminated_users WHERE LOWER(email) LIKE ? OR LOWER(name) LIKE ? ORDER BY imported_at DESC", (f"%{search.lower()}%",f"%{search.lower()}%")).fetchall()
-        else:
-            rows = c.execute("SELECT * FROM terminated_users ORDER BY imported_at DESC").fetchall()
-        return [dict(r) for r in rows]
+            q += " WHERE LOWER(name) LIKE ? OR matricula LIKE ? OR LOWER(email_rh) LIKE ?"
+            params = [f"%{search.lower()}%"] * 3
+        return [dict(r) for r in conn.execute(q + " ORDER BY termination_date DESC, name", params).fetchall()]
     finally:
         conn.close()
 
@@ -250,8 +276,10 @@ def get_all_terminated(search: str=""):
 def clear_terminated_users():
     conn = get_db()
     try:
-        # Apaga APENAS a tabela de desligados, mantendo o resto intacto
-        conn.execute("DELETE FROM terminated_users")
+        # Apaga só a lista de desligados e os cruzamentos. As decisões manuais da revisão
+        # ficam guardadas (valem de novo se a pessoa reaparecer numa planilha futura).
+        for t in ("terminated_users", "hr_terminations", "offboarding_matches"):
+            conn.execute(f"DELETE FROM {t}")
         conn.commit()
         return {"message": "Lista de desligados limpa com sucesso!"}
     finally:
@@ -324,7 +352,8 @@ async def import_platform_csv(platform: str=Form(...), file: UploadFile=File(...
             
     c.execute("INSERT INTO import_logs (source,platform,records_imported,notes) VALUES (?,?,?,?)", ("csv_upload",platform,count,f"col_email={email_col},col_lic={lic_col},pulados={skipped}"))
     conn.commit(); conn.close()
-    
+    _safe_rebuild_offboarding()
+
     msg = f"{count} usuários importados."
     if platform == "365":
         msg = f"{count} usuários com licenças PAGAS importados com sucesso! ({skipped} gratuitos/sem licença ignorados)."
@@ -410,7 +439,7 @@ async def preview_csv(file: UploadFile=File(...), platform: str=Form(default="36
 @app.delete("/data/reset")
 def reset_all():
     conn = get_db(); c = conn.cursor()
-    for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log","docusign_license_import","ms365_users","ms365_licenses","ms365_sync_log"]:
+    for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log","docusign_license_import","ms365_users","ms365_licenses","ms365_sync_log","hr_terminations","offboarding_matches","offboarding_decisions"]:
         c.execute(f"DELETE FROM {t}")
     conn.commit(); conn.close()
     return {"message":"Banco limpo."}
@@ -547,6 +576,7 @@ def docusign_sync(account_id: str = ""):
             print(f"Erro ao sincronizar licenças reais (Admin API): {e}")
             license_msg = " (licenças reais não atualizadas — verifique o consentimento da Admin API)"
 
+        _safe_rebuild_offboarding()
         return {"message": f"Sincronização Finalizada! {total_proc} usuários atualizados.{license_msg}"}
     finally:
         conn.close()
@@ -710,6 +740,7 @@ def google_sync():
                 conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email, "google", name)); count += 1
 
         conn.commit()
+        _safe_rebuild_offboarding()
         return {"message": f"Google Atualizado! {count} injetados."}
     except HTTPException:
         raise
@@ -805,10 +836,13 @@ def microsoft365_sync():
             part_numbers = [sku_part_by_id.get(a["skuId"], a["skuId"]) for a in (u.get("assignedLicenses") or [])]
             friendly = [sku_friendly_name(p) for p in part_numbers]
 
-            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses) VALUES (?, ?, ?, ?, ?)
+            emp_id = (u.get("employeeId") or "").strip()
+            aliases = sorted({p.split(":", 1)[1].lower() for p in (u.get("proxyAddresses") or []) if p.lower().startswith("smtp:")}
+                             | {m.lower() for m in (u.get("otherMails") or []) if m})
+            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
-                licenses=excluded.licenses, imported_at=CURRENT_TIMESTAMP""",
-                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly)))
+                licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases, imported_at=CURRENT_TIMESTAMP""",
+                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases)))
 
             if enabled and has_paid_license(part_numbers):
                 conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
@@ -827,6 +861,7 @@ def microsoft365_sync():
         conn.execute("""INSERT INTO ms365_sync_log (id, synced_at, error) VALUES (1, CURRENT_TIMESTAMP, NULL)
             ON CONFLICT(id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL""")
         conn.commit()
+        _safe_rebuild_offboarding()
         return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga."}
     except Exception as e:
         print(f"Erro no microsoft365_sync: {e}")
@@ -1016,6 +1051,7 @@ def alerts_docusign_live_check():
         first_run, novos, alterados, removidos = _diff_and_update_snapshot(conn, "docusign", items)
     finally:
         conn.close()
+    _safe_rebuild_offboarding()
     resumo = {"novos": len(novos), "alterados": len(alterados), "removidos": len(removidos)}
     if first_run:
         return {"notified": False, "reason": "baseline criado (primeira execução)", **resumo}
@@ -1057,3 +1093,149 @@ def alerts_changes_check():
     except Exception as e:
         print(f"Erro ao notificar movimentações no Chat: {e}")
         raise HTTPException(status_code=502, detail="Falha ao enviar notificação ao Google Chat.")
+
+# ─── OFFBOARDING (motor de identidade) ─────────────────────────────────────────
+
+def _offboarding_summary(conn):
+    st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
+    return {"pessoas": sum(st.values()), "agir": st.get("agir", 0), "revisar": st.get("revisar", 0),
+            "recontratados": st.get("recontratado", 0), "sem_conta": st.get("sem_conta", 0)}
+
+def rebuild_offboarding():
+    """Recalcula offboarding_matches a partir dos desligados importados e do estado atual
+    de cada sistema. Idempotente; aplica as decisões manuais salvas."""
+    conn = get_db()
+    try:
+        terms = [dict(r) for r in conn.execute("SELECT * FROM hr_terminations").fetchall()]
+        m365 = [{"email": r["email"], "upn": r["upn"], "name": r["name"], "enabled": bool(r["account_enabled"]),
+                 "employee_id": r["employee_id"] or "", "aliases": [a for a in (r["aliases"] or "").split(";") if a]}
+                for r in conn.execute("SELECT email, upn, name, account_enabled, employee_id, aliases FROM ms365_users")]
+        try:
+            google = [{"email": r["email"], "name": r["name"], "active": (r["status"] or "") == "active", "status": "ativa"}
+                      for r in conn.execute("SELECT email, name, status FROM google_users")]
+        except sqlite3.OperationalError:     # a tabela só existe depois do 1º sync do Google
+            google = []
+        docusign = [{"email": r["email"], "name": r["name"], "active": r["status"] in ("active", "pending"),
+                     "status": "ativa" if r["status"] == "active" else "pendente",
+                     "label": f'{r["name"] or r["email"]} · {r["account_name"]}'}
+                    for r in conn.execute("SELECT email, name, status, account_name FROM docusign_users")]
+        others = [{"email": r["email"], "name": r["display_name"] or "", "platform": r["platform"]}
+                  for r in conn.execute("SELECT email, platform, display_name FROM platform_users "
+                                        "WHERE platform NOT IN ('365','google','docusign')")]
+        decisions = {(r["matricula"], r["platform"], r["account_email"]): r["decision"]
+                     for r in conn.execute("SELECT matricula, platform, account_email, decision FROM offboarding_decisions")}
+        matches, people = offboarding.build_matches(terms, m365, google, docusign, others, decisions)
+        conn.execute("DELETE FROM offboarding_matches")
+        conn.executemany("""INSERT INTO offboarding_matches (matricula, person_name, company, termination_date, platform,
+            account_email, account_name, account_status, confidence, method, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            [(m["matricula"], m["person_name"], m["company"], m["termination_date"], m["platform"], m["account_email"],
+              m["account_name"], m["account_status"], m["confidence"], m["method"], m["detail"]) for m in matches])
+        conn.executemany("UPDATE hr_terminations SET match_status=?, match_detail=? WHERE matricula=?",
+                         [(st, det, mat) for mat, (st, det) in people.items()])
+        conn.commit()
+        return _offboarding_summary(conn)
+    finally:
+        conn.close()
+
+def _safe_rebuild_offboarding():
+    """Usado ao fim dos syncs: falha aqui não pode derrubar o sync."""
+    try:
+        rebuild_offboarding()
+    except Exception as e:
+        print(f"Erro ao recalcular offboarding: {e}")
+
+@app.post("/offboarding/import")
+def offboarding_import(url: str = Form(...)):
+    """Importa a planilha mensal do RH (link do Google Sheets). Acumula o histórico: quem
+    saiu em meses anteriores e ainda tem acesso continua aparecendo."""
+    try:
+        deslig_rows, geral_rows = offboarding.read_hr_sheet(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except requests.RequestException as e:
+        print(f"Erro ao baixar planilha do RH: {e}")
+        raise HTTPException(status_code=502, detail="Não consegui baixar a planilha do Google. Tente de novo.")
+    terms = offboarding.parse_terminations(deslig_rows)
+    census = offboarding.census_index(geral_rows)
+    conn = get_db()
+    try:
+        for t in terms:
+            rehire, rdetail = offboarding.classify_rehire(t, census)
+            d = offboarding.parse_date(t["termination_date"])
+            conn.execute("""INSERT INTO hr_terminations (matricula, name, company, cargo, termination_date, email_rh, motivo,
+                rehire_status, rehire_detail, source, imported_at) VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(matricula) DO UPDATE SET name=excluded.name, company=excluded.company, cargo=excluded.cargo,
+                termination_date=excluded.termination_date, email_rh=excluded.email_rh, motivo=excluded.motivo,
+                source=excluded.source, imported_at=CURRENT_TIMESTAMP""",
+                (t["matricula"], t["name"], t["company"], t["cargo"], d.isoformat() if d else t["termination_date"],
+                 t["email_rh"], t["motivo"], rehire, rdetail, url[:300]))
+        # Censo novo reavalia TODO o histórico: alguém desligado em agosto pode ter sido
+        # readmitido em setembro.
+        if census:
+            for r in conn.execute("SELECT matricula, name, termination_date FROM hr_terminations").fetchall():
+                rehire, rdetail = offboarding.classify_rehire(dict(r), census)
+                conn.execute("UPDATE hr_terminations SET rehire_status=?, rehire_detail=? WHERE matricula=?",
+                             (rehire, rdetail, r["matricula"]))
+        conn.execute("INSERT INTO import_logs (source, records_imported, notes) VALUES (?,?,?)",
+                     ("rh_gsheet", len(terms), f"censo={'sim' if geral_rows else 'nao'}"))
+        conn.commit()
+    finally:
+        conn.close()
+    summary = rebuild_offboarding()
+    aviso = "" if geral_rows else " ⚠ Aba Geral (censo) não encontrada: recontratações NÃO foram verificadas."
+    return {**summary, "importados": len(terms), "censo": bool(geral_rows),
+            "message": (f"{len(terms)} desligados importados. {summary['agir']} com acesso a remover (certeza), "
+                        f"{summary['revisar']} para revisar, {summary['recontratados']} recontratados.{aviso}")}
+
+@app.post("/offboarding/rebuild")
+def offboarding_rebuild():
+    return rebuild_offboarding()
+
+@app.get("/offboarding/summary")
+def offboarding_summary():
+    conn = get_db()
+    try:
+        return _offboarding_summary(conn)
+    finally:
+        conn.close()
+
+@app.get("/offboarding/review")
+def offboarding_review(search: str = "", platform: str = ""):
+    """Fila de revisão: correspondências sem certeza total."""
+    conn = get_db()
+    try:
+        q = "SELECT * FROM offboarding_matches WHERE confidence='revisar'"
+        params = []
+        if platform:
+            q += " AND platform=?"
+            params.append(platform)
+        if search:
+            q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
+            params += [f"%{search.lower()}%"] * 3
+        return [dict(r) for r in conn.execute(q + " ORDER BY person_name, platform", params).fetchall()]
+    finally:
+        conn.close()
+
+class OffboardingDecision(BaseModel):
+    matricula: str
+    platform: str
+    account_email: str
+    decision: str          # confirmar | rejeitar | desfazer
+
+@app.post("/offboarding/decision")
+def offboarding_decision(d: OffboardingDecision):
+    if d.decision not in ("confirmar", "rejeitar", "desfazer"):
+        raise HTTPException(status_code=400, detail="Decisão inválida.")
+    key = (d.matricula, d.platform, d.account_email.lower())
+    conn = get_db()
+    try:
+        if d.decision == "desfazer":
+            conn.execute("DELETE FROM offboarding_decisions WHERE matricula=? AND platform=? AND account_email=?", key)
+        else:
+            conn.execute("""INSERT INTO offboarding_decisions (matricula, platform, account_email, decision) VALUES (?,?,?,?)
+                ON CONFLICT(matricula, platform, account_email) DO UPDATE SET decision=excluded.decision,
+                decided_at=CURRENT_TIMESTAMP""", (*key, d.decision))
+        conn.commit()
+    finally:
+        conn.close()
+    return rebuild_offboarding()

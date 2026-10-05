@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { AlertTriangle, Users, Shield, RefreshCw, TrendingUp, Activity, BadgeCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../hooks/api.js';
 import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
 import RiskBadge from '../components/RiskBadge.jsx';
@@ -64,8 +65,8 @@ const handleClearTerminated = async () => {
     <ErrorBanner message={error} onRetry={load}/>
     <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem',marginBottom:'1.5rem'}}>
       <StatCard label="Desligados na base" icon={Users} loading={loading} value={stats?.total_terminated??0} sub="total importado do RH" color="var(--blue-500)"/>
-      <StatCard label="Com acesso ativo" icon={AlertTriangle} loading={loading} value={stats?.terminated_with_active_access??0} sub="requerem atenção" color="var(--red)"/>
-      <StatCard label="Usuários Azure" icon={Activity} loading={loading} value={stats?.total_azure_users??0} sub="base para cruzamento" color="var(--blue-400)"/>
+      <StatCard label="Com acesso ativo" icon={AlertTriangle} loading={loading} value={stats?.terminated_with_active_access??0} sub="certeza (matrícula/e-mail) — remover" color="var(--red)"/>
+      <Link to="/users?tab=review" style={{textDecoration:'none'}}><StatCard label="A revisar" icon={Activity} loading={loading} value={stats?.to_review??0} sub={`sem certeza total · ${stats?.rehired??0} recontratados`} color="#d97706"/></Link>
     </div>
     {licHealth.length>0&&(()=>{
       const withPct=licHealth.map(l=>({...l,ratio:l.total>0?l.used/l.total:0}));

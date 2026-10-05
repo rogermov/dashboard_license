@@ -55,43 +55,45 @@ function ApiSyncBtn({label, icon:Icon, endpoint, color, onSuccess}) {
 function Card({children,style}){return<div style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'1.5rem',boxShadow:'var(--shadow-sm)',marginBottom:'1rem',...style}}>{children}</div>;}
 function Step({n,title,tag}){return<div style={{display:'flex',alignItems:'center',gap:'0.75rem',marginBottom:'0.75rem'}}><div style={{width:24,height:24,borderRadius:'50%',background:'var(--accent)',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'0.72rem',fontWeight:700,flexShrink:0}}>{n}</div><h2 style={{fontSize:'0.95rem',fontWeight:600,color:'var(--text)'}}>{title}</h2>{tag&&<span style={{fontSize:'0.65rem',fontFamily:'var(--font-mono)',color:'var(--text2)',background:'var(--bg3)',padding:'2px 8px',borderRadius:4,border:'1px solid var(--border)'}}>{tag}</span>}</div>;}
 
+function SummaryBox({r}){
+  const items=[['Remover (certeza)',r.agir,'var(--red)'],['Revisar',r.revisar,'#d97706'],['Recontratados',r.recontratados,'var(--green)'],['Sem conta ativa',r.sem_conta,'var(--text3)']];
+  return<div style={{marginTop:'0.9rem'}}>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'0.6rem'}}>{items.map(([l,v,c])=><div key={l} style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'0.6rem 0.8rem'}}><div style={{fontSize:'0.68rem',color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.6,fontWeight:600}}>{l}</div><div style={{fontSize:'1.3rem',fontWeight:700,color:c}}>{v??0}</div></div>)}</div>
+    <div style={{fontSize:'0.75rem',color:'var(--text2)',marginTop:'0.5rem'}}>{r.importados} desligados lidos da planilha · histórico acumulado: {r.pessoas} pessoas</div>
+    {!r.censo&&<div style={{marginTop:'0.5rem',padding:'0.55rem 0.8rem',background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:'var(--radius)',fontSize:'0.76rem',color:'#92400e'}}>⚠ Aba <strong>Geral</strong> (censo) não encontrada: recontratações não foram verificadas.</div>}
+  </div>;
+}
+
 export default function Import(){
   const[sheetUrl,setSheetUrl]=useState('');const[sheetLoading,setSheetLoading]=useState(false);const[sheetResult,setSheetResult]=useState(null);const[toast,setToast]=useState(null);
   const showToast=(msg,ok)=>{setToast({msg,ok});setTimeout(()=>setToast(null),5000);};
-  const importSheet=async()=>{if(!sheetUrl.includes('docs.google.com')){showToast('Cole um link válido do Google Sheets.',false);return;}
+  const importSheet=async()=>{if(!sheetUrl.includes('docs.google.com/spreadsheets')){showToast('Cole o link da planilha do Google Sheets.',false);return;}
     setSheetLoading(true);setSheetResult(null);const fd=new FormData();fd.append('url',sheetUrl);
-    try{const res=await api.postForm('/import/terminated/gsheet',fd);setSheetResult({ok:true,...res});showToast(res.message,true);}
-    catch(e){showToast('Erro ao importar. Verifique se a planilha está pública.',false);}finally{setSheetLoading(false);}};
-    
+    try{const res=await api.postForm('/offboarding/import',fd);setSheetResult(res);showToast('Planilha importada e cruzada.',true);}
+    catch(e){showToast(e.message||'Erro ao importar. Verifique se a planilha está compartilhada por link.',false);}finally{setSheetLoading(false);}};
+
   return<div style={{animation:'fadeIn 0.3s ease',maxWidth:860}}>
     <Toast msg={toast?.msg} ok={toast?.ok}/>
-    <div style={{marginBottom:'1.75rem'}}><h1 style={{fontWeight:700,fontSize:'1.5rem',color:'var(--text)'}}>Revalidação e Importação</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Siga a ordem abaixo para o cruzamento funcionar corretamente no Dashboard</p></div>
-    
-    <div style={{display:'flex',gap:'0.6rem',background:'var(--accent-bg)',border:'1px solid var(--blue-200)',borderRadius:'var(--radius)',padding:'0.75rem 1rem',marginBottom:'1.25rem',fontSize:'0.8rem',color:'var(--blue-700)'}}><Info size={15} style={{flexShrink:0,marginTop:1}}/><span>Importe primeiro o <strong>Azure AD</strong>, depois os <strong>desligados do RH</strong>, e por último sincronize as <strong>Plataformas</strong>.</span></div>
-    
-    <Card><Step n="1" title="Relatório Azure AD — base de e-mails"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1rem',lineHeight:1.7}}>Mesmo formato do 365. Cria a base para cruzar <strong>nome → e-mail</strong> quando o RH mandar só o nome.</p><DropZone endpoint="/import/azure/csv" color="var(--blue-500)" hint="Azure Portal → Usuários → Baixar usuários (CSV)" onSuccess={r=>showToast(r.message,true)}/></Card>
-    
-    <Card><Step n="2" title="Desligados — RH" tag="Google Sheets ou CSV"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1rem',lineHeight:1.7}}>Se o RH mandar <strong>só o nome</strong>, o sistema busca o e-mail na base Azure automaticamente.</p>
-      <div style={{marginBottom:'1rem'}}><div style={{fontSize:'0.7rem',fontWeight:600,color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.8,marginBottom:'0.5rem'}}>Via Google Sheets</div>
-        <div style={{display:'flex',gap:'0.6rem'}}><div style={{flex:1,position:'relative'}}><Link size={14} color="var(--text3)" style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)'}}/><input value={sheetUrl} onChange={e=>setSheetUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." style={{width:'100%',padding:'0.6rem 0.75rem 0.6rem 2.1rem',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text)',fontSize:'0.82rem',outline:'none'}} onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>
-          <button onClick={importSheet} disabled={sheetLoading} style={{padding:'0.6rem 1.1rem',background:'var(--accent)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontWeight:600,fontSize:'0.85rem',display:'flex',alignItems:'center',gap:'0.4rem',opacity:sheetLoading?0.7:1}}>{sheetLoading?<Loader size={14} style={{animation:'spin 1s linear infinite'}}/>:<Upload size={14}/>}Importar</button>
-        </div>{sheetResult?.ok&&<div style={{marginTop:'0.6rem',padding:'0.6rem 0.9rem',background:'var(--green-bg)',border:'1px solid #bbf7d0',borderRadius:'var(--radius)',fontSize:'0.78rem',color:'var(--green)',fontWeight:500}}>✓ {sheetResult.message}</div>}
+    <div style={{marginBottom:'1.75rem'}}><h1 style={{fontWeight:700,fontSize:'1.5rem',color:'var(--text)'}}>Revalidação e Importação</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Planilha mensal do RH → cruzamento automático com as contas de cada sistema</p></div>
+
+    <div style={{display:'flex',gap:'0.6rem',background:'var(--accent-bg)',border:'1px solid var(--blue-200)',borderRadius:'var(--radius)',padding:'0.75rem 1rem',marginBottom:'1.25rem',fontSize:'0.8rem',color:'var(--blue-700)',lineHeight:1.6}}><Info size={15} style={{flexShrink:0,marginTop:2}}/><span>O cruzamento usa a <strong>matrícula</strong> (campo <em>employeeId</em> do Microsoft 365) e o <strong>e-mail</strong> informado pelo RH — esses vão direto para remoção. Quem só bate pelo <strong>nome</strong> vai para a fila <strong>Revisar</strong> em Usuários. Recontratados (aba Geral) nunca entram. As plataformas já sincronizam sozinhas todo dia útil; o cruzamento é refeito a cada sync.</span></div>
+
+    <Card><Step n="1" title="Planilha mensal do RH" tag="link do Google Sheets"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1rem',lineHeight:1.7}}>Cole o link recebido no mês. As abas são detectadas sozinhas: <strong>Desligados</strong> (matrícula, nome, data de saída) e <strong>Geral</strong> (censo, para proteger recontratados). Importar de novo é seguro: o histórico é acumulado e as decisões da revisão são mantidas.</p>
+      <div style={{display:'flex',gap:'0.6rem'}}><div style={{flex:1,position:'relative'}}><Link size={14} color="var(--text3)" style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)'}}/><input value={sheetUrl} onChange={e=>setSheetUrl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&importSheet()} placeholder="https://docs.google.com/spreadsheets/d/..." style={{width:'100%',padding:'0.6rem 0.75rem 0.6rem 2.1rem',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text)',fontSize:'0.82rem',outline:'none'}} onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>
+        <button onClick={importSheet} disabled={sheetLoading} style={{padding:'0.6rem 1.1rem',background:'var(--accent)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontWeight:600,fontSize:'0.85rem',display:'flex',alignItems:'center',gap:'0.4rem',opacity:sheetLoading?0.7:1}}>{sheetLoading?<Loader size={14} style={{animation:'spin 1s linear infinite'}}/>:<Upload size={14}/>}{sheetLoading?'Importando...':'Importar'}</button>
       </div>
-      <div><div style={{fontSize:'0.7rem',fontWeight:600,color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.8,marginBottom:'0.5rem'}}>Via CSV</div><DropZone endpoint="/import/terminated/csv" color="var(--accent)" hint="Aceita nome ou e-mail — cruza com Azure automaticamente" onSuccess={r=>showToast(r.message,true)}/></div>
+      {sheetResult&&<SummaryBox r={sheetResult}/>}
     </Card>
-    
-    <Card><Step n="3" title="Sincronização de Plataformas"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1.25rem',lineHeight:1.7}}>Atualize os dados para cruzar os acessos ativos com os desligados. Cada sincronização substitui os dados anteriores.</p>
-      
-      {/* Botões de API Automática (Sem CSV!) */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem', marginBottom: '1rem'}}>
+
+    <Card><Step n="2" title="Sincronizar plataformas agora" tag="opcional"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1.25rem',lineHeight:1.7}}>Roda automaticamente às 07h30. Use se precisar do estado atual antes disso — o cruzamento é refeito ao final de cada sync.</p>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem'}}>
+        <ApiSyncBtn label="Sincronizar Microsoft 365" icon={Building2} endpoint="/microsoft365/sync" color="#1e5fad" onSuccess={r=>showToast(r.message,true)} />
         <ApiSyncBtn label="Sincronizar Google" icon={Chrome} endpoint="/google/sync" color="#dc2626" onSuccess={r=>showToast(r.message,true)} />
         <ApiSyncBtn label="Sincronizar DocuSign" icon={FileSignature} endpoint="/docusign/sync" color="#7c3aed" onSuccess={r=>showToast(r.message,true)} />
-        <ApiSyncBtn label="Sincronizar Microsoft 365" icon={Building2} endpoint="/microsoft365/sync" color="#1e5fad" onSuccess={r=>showToast(r.message,true)} />
       </div>
+    </Card>
 
-      <hr style={{ border: 'none', borderTop: '1px dashed var(--border)', margin: '1.5rem 0' }} />
-      <div style={{fontSize:'0.75rem',fontWeight:600,color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.8,marginBottom:'0.8rem'}}>Importação Manual (CSV)</div>
-      
+    <Card><Step n="3" title="Outras plataformas" tag="CSV manual"/><p style={{fontSize:'0.8rem',color:'var(--text2)',marginBottom:'1rem',lineHeight:1.7}}>Sistemas sem integração: exporte a lista de usuários e solte aqui. O cruzamento usa os e-mails descobertos no Microsoft 365.</p>
       <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'1rem'}}>
         {PLATFORMS.map(p=><div key={p.id}>
           <div style={{display:'flex',alignItems:'center',gap:'0.4rem',marginBottom:'0.4rem'}}><div style={{width:8,height:8,borderRadius:'50%',background:p.color}}/><span style={{fontSize:'0.82rem',fontWeight:600}}>{p.label}</span></div>

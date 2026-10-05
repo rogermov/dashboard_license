@@ -1,4 +1,5 @@
 .env
 /secrets
 /accessguard.tar.gz
-frontend/.htpasswd
+frontend/.htpasswd__pycache__/
+.pytest_cache/

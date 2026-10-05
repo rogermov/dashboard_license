@@ -42,8 +42,10 @@ def get_graph_token(tenant_id: str, client_id: str, client_secret: str) -> str:
 
 def get_users(token: str) -> list:
     headers = {"Authorization": f"Bearer {token}"}
+    # employeeId = matrícula do SAP (chave do offboarding); proxyAddresses/otherMails =
+    # aliases, usados para achar a pessoa nos outros sistemas.
     url = (f"{GRAPH_BASE}/users?$select=id,displayName,mail,userPrincipalName,"
-           f"accountEnabled,assignedLicenses&$top=999")
+           f"accountEnabled,assignedLicenses,employeeId,proxyAddresses,otherMails&$top=999")
     all_users = []
     while url:
         resp = requests.get(url, headers=headers, timeout=30)

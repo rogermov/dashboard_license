@@ -7,9 +7,9 @@ import { exportCSV } from '../lib/csv.js';
 import RiskBadge from '../components/RiskBadge.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 
-const TABS=[{id:'risk',label:'Remover acesso'},{id:'review',label:'Revisar'},{id:'all',label:'Todos desligados'},{id:'azure',label:'Exportar M365'}];
-const ENDPOINT={risk:'/users/risk',review:'/offboarding/review',all:'/users/terminated'};
-const STATUS={agir:['Remover','var(--red)'],revisar:['Revisar','#d97706'],recontratado:['Recontratado','var(--green)'],sem_conta:['Sem conta ativa','var(--text3)']};
+const TABS=[{id:'risk',label:'Remover acesso'},{id:'review',label:'Revisar'},{id:'licensed',label:'Licenças M365'},{id:'all',label:'Todos desligados'},{id:'azure',label:'Exportar M365'}];
+const ENDPOINT={risk:'/users/risk',review:'/offboarding/review',licensed:'/offboarding/m365-licensed',all:'/users/terminated'};
+const STATUS={agir:['Remover','var(--red)'],revisar:['Revisar','#d97706'],recontratado:['Recontratado','var(--green)'],sem_conta:['Sem conta ativa','var(--text3)'],fora_da_gestao:['Fora da gestão','var(--text3)']};
 const fmtDate=d=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(d||'');return m?`${m[3]}/${m[2]}/${m[1]}`:(d||'—');};
 const today=()=>new Date().toISOString().slice(0,10);
 
@@ -62,11 +62,12 @@ export default function Users(){
 
   // CSV: uma linha por conta — é o que quem vai desativar precisa.
   const exportRows=()=>{
-    if(tab==='review')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),plataforma:PL[m.platform]||m.platform,conta:m.account_email,nome_na_conta:m.account_name,status_conta:m.account_status,motivo:m.detail}));
+    if(tab==='review')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),plataforma:PL[m.platform]||m.platform,conta:m.account_email,nome_na_conta:m.account_name,status_conta:m.account_status,motivo:m.method,observacao:m.detail}));
+    if(tab==='licensed')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),conta:m.account_email,office:m.office.length?'sim':'não',licencas:m.licenses.join('; '),situacao:m.confidence==='agir'?'Remover':'Revisar'}));
     if(tab==='all')return data.map(u=>({matricula:u.matricula,nome:u.name,empresa:u.department,cargo:u.cargo,desligamento:fmtDate(u.termination_date),situacao:(STATUS[u.match_status]||[u.match_status])[0],detalhe:u.match_detail}));
     return data.flatMap(u=>(u.accounts||[]).filter(a=>tab!=='azure'||a.platform==='365').map(a=>({matricula:u.matricula,nome:u.name,empresa:u.department,desligamento:fmtDate(u.termination_date),plataforma:PL[a.platform]||a.platform,conta:a.email,nome_na_conta:a.name,como_identificado:a.method})));
   };
-  const fileName={risk:'remover-acesso',review:'revisar',all:'desligados',azure:'desativar-m365'}[tab];
+  const fileName={licensed:'licencas-m365',risk:'remover-acesso',review:'revisar',all:'desligados',azure:'desativar-m365'}[tab];
 
   return<div style={{animation:'fadeIn 0.3s ease'}}>
     <div style={{marginBottom:'1.75rem'}}><h1 style={{fontWeight:700,fontSize:'1.5rem',color:'var(--text)'}}>Usuários</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Desligados e seus acessos ativos por plataforma</p></div>
@@ -93,13 +94,23 @@ export default function Users(){
       {data.map(m=>{const key=`${m.matricula}|${m.platform}|${m.account_email}`;return<Row key={key}>
         <td style={td}><Person name={m.person_name} matricula={m.matricula} company={m.company} date={m.termination_date}/></td>
         <td style={td}><div style={{display:'flex',gap:6,alignItems:'center',marginBottom:3}}><Chip platform={m.platform}/><span style={{fontWeight:500}}>{m.account_name||'—'}</span></div><div style={{...mono,color:'var(--text2)'}}>{m.account_email}{m.account_status?` · ${m.account_status}`:''}</div></td>
-        <td style={{...td,color:'var(--text2)',fontSize:'0.78rem',maxWidth:300}}>{m.detail}</td>
+        <td style={{...td,color:'var(--text2)',fontSize:'0.78rem',maxWidth:320}}>{m.method}{m.detail&&<div style={{marginTop:4,color:'#92400e'}}>{m.detail}</div>}</td>
         <td style={{...td,whiteSpace:'nowrap'}}><div style={{display:'flex',gap:6}}>
           <button disabled={busy===key} onClick={()=>decide(m,'confirmar')} style={{display:'flex',alignItems:'center',gap:4,padding:'0.35rem 0.7rem',background:'var(--red)',border:'none',borderRadius:6,color:'#fff',fontSize:'0.75rem',fontWeight:600,opacity:busy===key?0.6:1}}><Check size={13}/>Confirmar</button>
           <button disabled={busy===key} onClick={()=>decide(m,'rejeitar')} style={{display:'flex',alignItems:'center',gap:4,padding:'0.35rem 0.7rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text2)',fontSize:'0.75rem',opacity:busy===key?0.6:1}}><X size={13}/>Não é a pessoa</button>
         </div></td>
       </Row>;})}
     </Table>}
+
+    {tab==='licensed'&&<><div style={{background:'var(--accent-bg)',border:'1px solid var(--blue-200)',borderRadius:'var(--radius)',padding:'0.7rem 1rem',marginBottom:'1rem',fontSize:'0.78rem',color:'var(--blue-700)',lineHeight:1.6}}>Contas do Microsoft 365 de desligados que ainda consomem <strong>licença paga</strong>. Pacotes com <strong>Office</strong> aparecem primeiro: são a prioridade. Itens "Revisar" precisam ser confirmados na aba Revisar antes de remover.</div>
+    <Table headers={['Pessoa','Conta M365','Licenças','Situação']} loading={loading} count={data.length} empty="✓ Nenhum desligado com licença paga no M365" emptyColor="var(--green)">
+      {data.map(m=><Row key={`${m.matricula}|${m.account_email}`}>
+        <td style={td}><Person name={m.person_name} matricula={m.matricula} company={m.company} date={m.termination_date}/></td>
+        <td style={{...td,...mono,color:'var(--text2)'}}>{m.account_email}</td>
+        <td style={td}><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{m.licenses.map(l=>{const o=m.office.includes(l);return<span key={l} style={{padding:'2px 8px',borderRadius:4,fontSize:'0.7rem',fontWeight:o?600:400,background:o?'#fee2e2':'var(--bg3)',color:o?'var(--red)':'var(--text2)',border:`1px solid ${o?'#fca5a5':'var(--border)'}`}}>{o?'★ ':''}{l}</span>;})}</div></td>
+        <td style={td}><StatusBadge status={m.confidence}/></td>
+      </Row>)}
+    </Table></>}
 
     {tab==='all'&&<Table headers={['Pessoa','Cargo','Situação','Detalhe']} loading={loading} count={data.length} empty="Nenhum desligado importado. Importe a planilha do RH em Importação.">
       {data.map(u=><Row key={u.matricula}>

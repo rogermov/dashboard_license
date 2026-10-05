@@ -209,7 +209,8 @@ def health(): return {"status":"ok","timestamp":datetime.now().isoformat()}
 def get_stats():
     conn = get_db()
     try:
-        total = conn.execute("SELECT COUNT(*) FROM hr_terminations").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM hr_terminations "
+                             "WHERE COALESCE(match_status,'') != 'fora_da_gestao'").fetchone()[0]
         st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
         exposure = conn.execute("SELECT platform, COUNT(DISTINCT matricula) AS count FROM offboarding_matches "
                                 "WHERE confidence='agir' GROUP BY platform").fetchall()
@@ -1099,7 +1100,8 @@ def alerts_changes_check():
 def _offboarding_summary(conn):
     st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
     return {"pessoas": sum(st.values()), "agir": st.get("agir", 0), "revisar": st.get("revisar", 0),
-            "recontratados": st.get("recontratado", 0), "sem_conta": st.get("sem_conta", 0)}
+            "recontratados": st.get("recontratado", 0), "sem_conta": st.get("sem_conta", 0),
+            "fora_da_gestao": st.get("fora_da_gestao", 0)}
 
 def rebuild_offboarding():
     """Recalcula offboarding_matches a partir dos desligados importados e do estado atual
@@ -1124,7 +1126,9 @@ def rebuild_offboarding():
                                         "WHERE platform NOT IN ('365','google','docusign')")]
         decisions = {(r["matricula"], r["platform"], r["account_email"]): r["decision"]
                      for r in conn.execute("SELECT matricula, platform, account_email, decision FROM offboarding_decisions")}
-        matches, people = offboarding.build_matches(terms, m365, google, docusign, others, decisions)
+        dmap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "company_domains.json")
+        dmap = offboarding.load_domain_map(dmap_path) if os.path.exists(dmap_path) else None
+        matches, people = offboarding.build_matches(terms, m365, google, docusign, others, decisions, dmap)
         conn.execute("DELETE FROM offboarding_matches")
         conn.executemany("""INSERT INTO offboarding_matches (matricula, person_name, company, termination_date, platform,
             account_email, account_name, account_status, confidence, method, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -1239,3 +1243,45 @@ def offboarding_decision(d: OffboardingDecision):
     finally:
         conn.close()
     return rebuild_offboarding()
+
+# Pacotes que incluem os apps do Office (Word/Excel/Outlook...). Prioridade na remoção:
+# é licença paga parada em conta de desligado.
+OFFICE_LICENSE_KEYWORDS = ["business standard", "business basic", "business premium", "office 365",
+                           "microsoft 365 e", "microsoft 365 f", "apps for"]
+# Não usa FREE_LICENSE_KEYWORDS: lá 'standard' marcaria o Business Standard como grátis.
+M365_FREE_KEYWORDS = ["grátis", "gratis", "free", "viral", "exploratory", "trial", "dev", "adhoc",
+                      "unlicensed", "stream"]
+
+def _is_office(lic):
+    return any(k in lic.lower() for k in OFFICE_LICENSE_KEYWORDS)
+
+def _is_paid_m365(lic):
+    return _is_office(lic) or not any(k in lic.lower() for k in M365_FREE_KEYWORDS)
+
+@app.get("/offboarding/m365-licensed")
+def offboarding_m365_licensed(search: str = ""):
+    """Contas M365 de desligados (remover ou revisar) que ainda têm licença paga. Office primeiro."""
+    conn = get_db()
+    try:
+        lic_by_mail = {}
+        for r in conn.execute("SELECT email, upn, licenses FROM ms365_users WHERE COALESCE(licenses,'') != ''"):
+            for a in (r["email"], r["upn"]):
+                if a:
+                    lic_by_mail[a.lower()] = r["licenses"]
+        q = "SELECT * FROM offboarding_matches WHERE platform='365' AND confidence IN ('agir','revisar')"
+        params = []
+        if search:
+            q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
+            params += [f"%{search.lower()}%"] * 3
+        rows = conn.execute(q, params).fetchall()
+    finally:
+        conn.close()
+    result = []
+    for r in rows:
+        paid = [l for l in (lic_by_mail.get(r["account_email"]) or "").split(";") if l and _is_paid_m365(l)]
+        if not paid:
+            continue
+        office = [l for l in paid if _is_office(l)]
+        result.append({**dict(r), "licenses": paid, "office": office})
+    result.sort(key=lambda x: (not x["office"], x["confidence"] != "agir", x["person_name"] or ""))
+    return result

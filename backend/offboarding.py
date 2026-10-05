@@ -284,6 +284,10 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
         return by_mail, by_first
 
     g_mail, g_first = index([g for g in google if g["active"]])
+    g_by_emp = defaultdict(list)          # Employee ID do Google Workspace = matrícula
+    for g in google:
+        if g["active"] and strip_mat(g.get("employee_id")):
+            g_by_emp[strip_mat(g["employee_id"])].append(g)
     d_mail, d_first = index([d for d in docusign if d["active"]])
     o_mail = defaultdict(list)
     for o in others:
@@ -377,8 +381,7 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
                 u = m_by_mail[email_rh]
                 add("365", u["email"] or u["upn"], u["name"], "ativa", AGIR, "E-mail informado pelo RH")
 
-        def propagate(platform, by_mail, by_first, label):
-            found = False
+        def propagate(platform, by_mail, by_first, label, found=False):
             for a, (c, m, bn) in addrs.items():
                 for acc in by_mail.get(a, []):
                     add(platform, acc["email"], acc.get("label") or acc["name"], acc.get("status", "ativa"), c, m, by_name=bn)
@@ -398,7 +401,10 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
                 add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR,
                     f"Nome compatível no {label} (todos os termos constam no nome do RH)", by_name=True)
 
-        propagate("google", g_mail, g_first, "Google")
+        g_emp = g_by_emp.get(strip_mat(mat), [])
+        for acc in g_emp:
+            add("google", acc["email"], acc["name"], acc.get("status", "ativa"), AGIR, "Matrícula = Employee ID no Google")
+        propagate("google", g_mail, g_first, "Google", found=bool(g_emp))
         propagate("docusign", d_mail, d_first, "DocuSign")
         for a, (c, m, bn) in addrs.items():
             for o in o_mail.get(a, []):

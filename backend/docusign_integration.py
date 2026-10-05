@@ -325,3 +325,17 @@ def sync_real_licenses(integration_key: str, user_id: str, rsa_key_path: str) ->
             "status": row.get("UserStatus"),
         })
     return records
+
+def close_user(account: dict, access_token: str, user_id: str) -> None:
+    """Fecha o acesso do usuário na conta (não apaga envelopes nem histórico).
+    O usuário impersonado pelo JWT precisa ser admin da conta."""
+    base_uri = (account.get("base_uri") or "").rstrip("/")
+    resp = requests.delete(f"{base_uri}/restapi/v2.1/accounts/{account['id']}/users",
+                           json={"users": [{"userId": user_id}]},
+                           headers={"Authorization": f"Bearer {access_token}"}, timeout=20)
+    if resp.status_code != 200:
+        raise Exception(f"Erro DocuSign ao fechar usuário ({resp.status_code}): {resp.text[:300]}")
+    for u in resp.json().get("users", []):
+        err = (u.get("errorDetails") or {}).get("message")
+        if err:
+            raise Exception(f"DocuSign recusou: {err}")

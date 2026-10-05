@@ -1243,3 +1243,45 @@ def offboarding_decision(d: OffboardingDecision):
     finally:
         conn.close()
     return rebuild_offboarding()
+
+# Pacotes que incluem os apps do Office (Word/Excel/Outlook...). Prioridade na remoção:
+# é licença paga parada em conta de desligado.
+OFFICE_LICENSE_KEYWORDS = ["business standard", "business basic", "business premium", "office 365",
+                           "microsoft 365 e", "microsoft 365 f", "apps for"]
+# Não usa FREE_LICENSE_KEYWORDS: lá 'standard' marcaria o Business Standard como grátis.
+M365_FREE_KEYWORDS = ["grátis", "gratis", "free", "viral", "exploratory", "trial", "dev", "adhoc",
+                      "unlicensed", "stream"]
+
+def _is_office(lic):
+    return any(k in lic.lower() for k in OFFICE_LICENSE_KEYWORDS)
+
+def _is_paid_m365(lic):
+    return _is_office(lic) or not any(k in lic.lower() for k in M365_FREE_KEYWORDS)
+
+@app.get("/offboarding/m365-licensed")
+def offboarding_m365_licensed(search: str = ""):
+    """Contas M365 de desligados (remover ou revisar) que ainda têm licença paga. Office primeiro."""
+    conn = get_db()
+    try:
+        lic_by_mail = {}
+        for r in conn.execute("SELECT email, upn, licenses FROM ms365_users WHERE COALESCE(licenses,'') != ''"):
+            for a in (r["email"], r["upn"]):
+                if a:
+                    lic_by_mail[a.lower()] = r["licenses"]
+        q = "SELECT * FROM offboarding_matches WHERE platform='365' AND confidence IN ('agir','revisar')"
+        params = []
+        if search:
+            q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
+            params += [f"%{search.lower()}%"] * 3
+        rows = conn.execute(q, params).fetchall()
+    finally:
+        conn.close()
+    result = []
+    for r in rows:
+        paid = [l for l in (lic_by_mail.get(r["account_email"]) or "").split(";") if l and _is_paid_m365(l)]
+        if not paid:
+            continue
+        office = [l for l in paid if _is_office(l)]
+        result.append({**dict(r), "licenses": paid, "office": office})
+    result.sort(key=lambda x: (not x["office"], x["confidence"] != "agir", x["person_name"] or ""))
+    return result

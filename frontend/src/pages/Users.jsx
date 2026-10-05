@@ -9,7 +9,7 @@ import ErrorBanner from '../components/ErrorBanner.jsx';
 
 const TABS=[{id:'risk',label:'Remover acesso'},{id:'review',label:'Revisar'},{id:'all',label:'Todos desligados'},{id:'azure',label:'Exportar M365'}];
 const ENDPOINT={risk:'/users/risk',review:'/offboarding/review',all:'/users/terminated'};
-const STATUS={agir:['Remover','var(--red)'],revisar:['Revisar','#d97706'],recontratado:['Recontratado','var(--green)'],sem_conta:['Sem conta ativa','var(--text3)']};
+const STATUS={agir:['Remover','var(--red)'],revisar:['Revisar','#d97706'],recontratado:['Recontratado','var(--green)'],sem_conta:['Sem conta ativa','var(--text3)'],fora_da_gestao:['Fora da gestão','var(--text3)']};
 const fmtDate=d=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(d||'');return m?`${m[3]}/${m[2]}/${m[1]}`:(d||'—');};
 const today=()=>new Date().toISOString().slice(0,10);
 

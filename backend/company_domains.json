@@ -1,5 +1,6 @@
 {
   "_leia": "Empresa (trecho do nome no SAP, sem acento, minúsculo) -> domínios de e-mail dela. Usado só para descartar candidatos achados POR NOME com domínio de outra empresa. 'grupo' = domínios compartilhados/corporativos: não confirmam nem descartam. Domínio fora do mapa também não descarta (fica em revisão).",
+  "fora_da_gestao": ["sao geraldo", "itanorte"],
   "grupo": [
     "comporte.com.br", "holdingcomporte.onmicrosoft.com", "compliancecomporte.com.br", "marketingcomporte.com.br",
     "parceiros.comporte.com.br", "relacionamentocomcliente.com.br", "glarustec.com.br",

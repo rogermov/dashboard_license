@@ -12,6 +12,7 @@ Regras:
   bloqueia qualquer ação. Nome "Presente" com entrada anterior (homônimo ou contrato
   concorrente) rebaixa tudo para "revisar".
 - Homônimo comprovado (mesmo nome, mas a conta tem OUTRA matrícula) nunca vira candidato.
+- Empresas em "fora_da_gestao" (company_domains.json) são ignoradas.
 - Candidato achado só por NOME cujo e-mail é de outra empresa do grupo (company_domains.json)
   é descartado. Matches por matrícula/e-mail do RH não passam por esse filtro (transferências).
 - Decisões manuais (confirmar / não é a pessoa) são aplicadas a cada recálculo.
@@ -37,7 +38,8 @@ SHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
 def load_domain_map(path):
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
-    return {"grupo": {d.lower() for d in raw.get("grupo", [])},
+    return {"fora_da_gestao": [fold(k) for k in raw.get("fora_da_gestao", [])],
+            "grupo": {d.lower() for d in raw.get("grupo", [])},
             "empresas": {fold(k): {d.lower() for d in v} for k, v in raw.get("empresas", {}).items()}}
 
 
@@ -294,6 +296,9 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
     matches, people = [], {}
     for t in terminations:
         mat, nome = t["matricula"], normalize_name(t["name"])
+        if domain_map and any(k in fold(t.get("company")) for k in domain_map.get("fora_da_gestao", [])):
+            people[mat] = ("fora_da_gestao", "Empresa fora da gestão de TI")
+            continue
         if t.get("rehire_status") == "recontratado":
             people[mat] = ("recontratado", t.get("rehire_detail") or "")
             continue

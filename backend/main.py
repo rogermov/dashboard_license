@@ -209,7 +209,8 @@ def health(): return {"status":"ok","timestamp":datetime.now().isoformat()}
 def get_stats():
     conn = get_db()
     try:
-        total = conn.execute("SELECT COUNT(*) FROM hr_terminations").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM hr_terminations "
+                             "WHERE COALESCE(match_status,'') != 'fora_da_gestao'").fetchone()[0]
         st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
         exposure = conn.execute("SELECT platform, COUNT(DISTINCT matricula) AS count FROM offboarding_matches "
                                 "WHERE confidence='agir' GROUP BY platform").fetchall()
@@ -1099,7 +1100,8 @@ def alerts_changes_check():
 def _offboarding_summary(conn):
     st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
     return {"pessoas": sum(st.values()), "agir": st.get("agir", 0), "revisar": st.get("revisar", 0),
-            "recontratados": st.get("recontratado", 0), "sem_conta": st.get("sem_conta", 0)}
+            "recontratados": st.get("recontratado", 0), "sem_conta": st.get("sem_conta", 0),
+            "fora_da_gestao": st.get("fora_da_gestao", 0)}
 
 def rebuild_offboarding():
     """Recalcula offboarding_matches a partir dos desligados importados e do estado atual

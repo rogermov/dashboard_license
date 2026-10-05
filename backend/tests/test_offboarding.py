@@ -167,3 +167,10 @@ def test_dominio_do_grupo_confere_para_a_holding_e_e_neutro_para_as_demais():
     assert ob.domain_verdict("Piracicabana Holding", "x@comporte.com.br", dm)[0] == "ok"
     assert ob.domain_verdict("Viacao Piracicabana SA", "x@comporte.com.br", dm)[0] == "grupo"
     assert ob.domain_verdict("Quality Bus Com de Veic.", "x@metrobh.com.br", dm)[0] == "outra"
+
+
+def test_empresa_fora_da_gestao_e_ignorada():
+    t = term("1", "ANA LIMA"); t["company"] = "Viacao Sao Geraldo Sacr"
+    matches, people = run([t], m=[m365("ana@x.com", "Ana Lima", emp="1")],
+                          dmap={**DMAP, "fora_da_gestao": ["sao geraldo"]})
+    assert matches == [] and people["1"][0] == "fora_da_gestao"

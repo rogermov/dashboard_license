@@ -2,3 +2,5 @@
 /secrets
 /accessguard.tar.gz
 frontend/.htpasswd
+__pycache__/
+.pytest_cache/

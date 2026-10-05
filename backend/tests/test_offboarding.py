@@ -159,3 +159,11 @@ def test_mapa_de_dominios_do_repo_e_valido():
     import os
     dm = ob.load_domain_map(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "company_domains.json"))
     assert ob.domain_verdict("Viacao Piracicabana SA", "x@metrobh.com.br", dm)[0] == "outra"
+
+
+def test_dominio_do_grupo_confere_para_a_holding_e_e_neutro_para_as_demais():
+    import os
+    dm = ob.load_domain_map(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "company_domains.json"))
+    assert ob.domain_verdict("Piracicabana Holding", "x@comporte.com.br", dm)[0] == "ok"
+    assert ob.domain_verdict("Viacao Piracicabana SA", "x@comporte.com.br", dm)[0] == "grupo"
+    assert ob.domain_verdict("Quality Bus Com de Veic.", "x@metrobh.com.br", dm)[0] == "outra"

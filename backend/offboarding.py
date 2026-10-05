@@ -46,10 +46,12 @@ def domain_verdict(company, email, dmap):
     if not dmap or not email or "@" not in email:
         return None, ""
     dom = email.lower().rsplit("@", 1)[1]
-    if dom in dmap["grupo"]:
-        return "grupo", "domínio do grupo (não confirma a empresa)"
     comp = fold(company)
     own = set().union(*[v for k, v in dmap["empresas"].items() if k in comp])
+    if dom in own:      # antes do grupo: comporte.com.br é da Holding, mas neutro p/ as demais
+        return "ok", "domínio confere com a empresa"
+    if dom in dmap["grupo"]:
+        return "grupo", "domínio do grupo (não confirma a empresa)"
     if not own:
         return "sem_mapa", "empresa sem domínio mapeado"
     if dom in own:

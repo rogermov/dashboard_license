@@ -2,8 +2,8 @@
   "_leia": "Empresa (trecho do nome no SAP, sem acento, minúsculo) -> domínios de e-mail dela. Usado só para descartar candidatos achados POR NOME com domínio de outra empresa. 'grupo' = domínios compartilhados/corporativos: não confirmam nem descartam. Domínio fora do mapa também não descarta (fica em revisão).",
   "grupo": [
     "comporte.com.br", "holdingcomporte.onmicrosoft.com", "compliancecomporte.com.br", "marketingcomporte.com.br",
-    "parceiros.comporte.com.br", "relacionamentocomcliente.com.br", "glarustec.com.br", "patrimony.com.br",
-    "corretoraborealis.com.br", "novoger.com.br", "atendimentoencomendas.com.br",
+    "parceiros.comporte.com.br", "relacionamentocomcliente.com.br", "glarustec.com.br",
+    "novoger.com.br", "atendimentoencomendas.com.br",
     "mobifacil.com.br", "fretamento.mobifacil.com.br", "mobicorp.mobifacil.com.br", "mobicorpviagem.com.br",
     "mobiencomendas.com.br", "mobiuse.com.br", "viajemais.net.br", "viajemaisapp.com.br"
   ],
@@ -34,6 +34,10 @@
     "empresa cruz": ["empresacruz.com.br", "cruzencomendas.com.br"],
     "luwasa": ["viacaoluwasa.com.br"],
     "ingatur": ["ingatur.com.br"],
-    "manoel rodrigues": ["manoelrodrigues.com.br"]
+    "manoel rodrigues": ["manoelrodrigues.com.br"],
+    "quality bus": ["qualitybus.com.br"],
+    "patrimony": ["patrimony.com.br"],
+    "borealis": ["corretoraborealis.com.br"],
+    "piracicabana holding": ["comporte.com.br"]
   }
 }

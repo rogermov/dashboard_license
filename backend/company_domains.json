@@ -1,0 +1,22 @@
+{
+  "_leia": "Empresa (trecho do nome no SAP, sem acento, minúsculo) -> domínios de e-mail dela. Usado só para descartar candidatos achados POR NOME com domínio de outra empresa. 'grupo' = domínios compartilhados, não confirmam nem descartam.",
+  "grupo": ["comporte.com.br", "holdingcomporte.onmicrosoft.com"],
+  "empresas": {
+    "piracicabana": ["piracicabana.com.br", "viacaopiracicabana.com.br", "piracicabanadf.com.br"],
+    "metro bh": ["metrobh.com.br"],
+    "tic trens": ["tictrens.com.br", "ticmobilidade.com.br"],
+    "trivia trens": ["triviatrens.com.br", "engetrens.com.br"],
+    "itamarati": ["expressoitamarati.com.br"],
+    "br mobilidade": ["brmobilidadebs.com.br"],
+    "grande bauru": ["grandebauru.com.br"],
+    "reunidas": ["reunidaspaulista.com.br"],
+    "princesa do norte": ["princesamogi.com.br"],
+    "guaratiba": ["gturj.com.br"],
+    "sepetiba": ["tuse.com.br"],
+    "nsa da penha": ["nspenha.com.br"],
+    "cidade cancao": ["tccc.com.br"],
+    "transportes lider": ["lidercoletivo.com.br"],
+    "uniao transp de encomenda": ["uniaoexpress.com.br", "atendimentoencomendas.com.br"],
+    "expresso uniao": ["expressouniao.com.br"]
+  }
+}

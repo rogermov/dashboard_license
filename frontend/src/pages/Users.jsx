@@ -62,7 +62,7 @@ export default function Users(){
 
   // CSV: uma linha por conta — é o que quem vai desativar precisa.
   const exportRows=()=>{
-    if(tab==='review')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),plataforma:PL[m.platform]||m.platform,conta:m.account_email,nome_na_conta:m.account_name,status_conta:m.account_status,motivo:m.detail}));
+    if(tab==='review')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),plataforma:PL[m.platform]||m.platform,conta:m.account_email,nome_na_conta:m.account_name,status_conta:m.account_status,motivo:m.method,observacao:m.detail}));
     if(tab==='all')return data.map(u=>({matricula:u.matricula,nome:u.name,empresa:u.department,cargo:u.cargo,desligamento:fmtDate(u.termination_date),situacao:(STATUS[u.match_status]||[u.match_status])[0],detalhe:u.match_detail}));
     return data.flatMap(u=>(u.accounts||[]).filter(a=>tab!=='azure'||a.platform==='365').map(a=>({matricula:u.matricula,nome:u.name,empresa:u.department,desligamento:fmtDate(u.termination_date),plataforma:PL[a.platform]||a.platform,conta:a.email,nome_na_conta:a.name,como_identificado:a.method})));
   };
@@ -93,7 +93,7 @@ export default function Users(){
       {data.map(m=>{const key=`${m.matricula}|${m.platform}|${m.account_email}`;return<Row key={key}>
         <td style={td}><Person name={m.person_name} matricula={m.matricula} company={m.company} date={m.termination_date}/></td>
         <td style={td}><div style={{display:'flex',gap:6,alignItems:'center',marginBottom:3}}><Chip platform={m.platform}/><span style={{fontWeight:500}}>{m.account_name||'—'}</span></div><div style={{...mono,color:'var(--text2)'}}>{m.account_email}{m.account_status?` · ${m.account_status}`:''}</div></td>
-        <td style={{...td,color:'var(--text2)',fontSize:'0.78rem',maxWidth:300}}>{m.detail}</td>
+        <td style={{...td,color:'var(--text2)',fontSize:'0.78rem',maxWidth:320}}>{m.method}{m.detail&&<div style={{marginTop:4,color:'#92400e'}}>{m.detail}</div>}</td>
         <td style={{...td,whiteSpace:'nowrap'}}><div style={{display:'flex',gap:6}}>
           <button disabled={busy===key} onClick={()=>decide(m,'confirmar')} style={{display:'flex',alignItems:'center',gap:4,padding:'0.35rem 0.7rem',background:'var(--red)',border:'none',borderRadius:6,color:'#fff',fontSize:'0.75rem',fontWeight:600,opacity:busy===key?0.6:1}}><Check size={13}/>Confirmar</button>
           <button disabled={busy===key} onClick={()=>decide(m,'rejeitar')} style={{display:'flex',alignItems:'center',gap:4,padding:'0.35rem 0.7rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text2)',fontSize:'0.75rem',opacity:busy===key?0.6:1}}><X size={13}/>Não é a pessoa</button>

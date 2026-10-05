@@ -1124,7 +1124,9 @@ def rebuild_offboarding():
                                         "WHERE platform NOT IN ('365','google','docusign')")]
         decisions = {(r["matricula"], r["platform"], r["account_email"]): r["decision"]
                      for r in conn.execute("SELECT matricula, platform, account_email, decision FROM offboarding_decisions")}
-        matches, people = offboarding.build_matches(terms, m365, google, docusign, others, decisions)
+        dmap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "company_domains.json")
+        dmap = offboarding.load_domain_map(dmap_path) if os.path.exists(dmap_path) else None
+        matches, people = offboarding.build_matches(terms, m365, google, docusign, others, decisions, dmap)
         conn.execute("DELETE FROM offboarding_matches")
         conn.executemany("""INSERT INTO offboarding_matches (matricula, person_name, company, termination_date, platform,
             account_email, account_name, account_status, confidence, method, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",

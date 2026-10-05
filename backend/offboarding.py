@@ -12,6 +12,8 @@ Regras:
   bloqueia qualquer ação. Nome "Presente" com entrada anterior (homônimo ou contrato
   concorrente) rebaixa tudo para "revisar".
 - Homônimo comprovado (mesmo nome, mas a conta tem OUTRA matrícula) nunca vira candidato.
+- Candidato achado só por NOME cujo e-mail é de outra empresa do grupo (company_domains.json)
+  é descartado. Matches por matrícula/e-mail do RH não passam por esse filtro (transferências).
 - Decisões manuais (confirmar / não é a pessoa) são aplicadas a cada recálculo.
 
 Este módulo não acessa o banco: recebe listas de dicts e devolve listas de dicts.
@@ -28,6 +30,34 @@ import requests
 
 AGIR, REVISAR = "agir", "revisar"
 SHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
+
+
+# ─── Empresa → domínios ──────────────────────────────────────────────────────
+
+def load_domain_map(path):
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    return {"grupo": {d.lower() for d in raw.get("grupo", [])},
+            "empresas": {fold(k): {d.lower() for d in v} for k, v in raw.get("empresas", {}).items()}}
+
+
+def domain_verdict(company, email, dmap):
+    """('ok' | 'grupo' | 'outra' | 'desconhecido' | 'sem_mapa' | None, texto)."""
+    if not dmap or not email or "@" not in email:
+        return None, ""
+    dom = email.lower().rsplit("@", 1)[1]
+    if dom in dmap["grupo"]:
+        return "grupo", "domínio do grupo (não confirma a empresa)"
+    comp = fold(company)
+    own = set().union(*[v for k, v in dmap["empresas"].items() if k in comp])
+    if not own:
+        return "sem_mapa", "empresa sem domínio mapeado"
+    if dom in own:
+        return "ok", "domínio confere com a empresa"
+    donos = [k for k, v in dmap["empresas"].items() if dom in v]
+    if donos:
+        return "outra", f"{email} é da empresa '{donos[0]}', não de {company}"
+    return "desconhecido", f"domínio {dom} não mapeado"
 
 
 # ─── Normalização ────────────────────────────────────────────────────────────
@@ -211,7 +241,7 @@ def classify_rehire(term, census):
 
 # ─── Motor de correspondência ────────────────────────────────────────────────
 
-def build_matches(terminations, m365, google, docusign, others, decisions):
+def build_matches(terminations, m365, google, docusign, others, decisions, domain_map=None):
     """
     terminations: hr_terminations (matricula, name, company, termination_date, email_rh,
                   rehire_status, rehire_detail)
@@ -220,6 +250,7 @@ def build_matches(terminations, m365, google, docusign, others, decisions):
     docusign: email, name, active, status, label ("Nome · Conta")
     others:   email, name, platform           (Lucid/Bitbucket/Jira importados por CSV)
     decisions: {(matricula, platform, email): 'confirmar' | 'rejeitar'}
+    domain_map: load_domain_map(...) — filtra candidatos achados só por nome
 
     Retorna (matches, people): matches = linhas por conta; people = {matricula: (status, detalhe)}
     com status 'agir' | 'revisar' | 'recontratado' | 'sem_conta'.
@@ -255,6 +286,9 @@ def build_matches(terminations, m365, google, docusign, others, decisions):
         if o["email"]:
             o_mail[o["email"].lower()].append(o)
 
+    def label_of(platform):
+        return {"365": "Microsoft 365", "google": "Google", "docusign": "DocuSign"}.get(platform, platform)
+
     matches, people = [], {}
     for t in terminations:
         mat, nome = t["matricula"], normalize_name(t["name"])
@@ -265,11 +299,18 @@ def build_matches(terminations, m365, google, docusign, others, decisions):
         notes = [t["rehire_detail"]] if cap else []
         rows = {}
 
-        def add(platform, email, name, status, conf, method):
+        def add(platform, email, name, status, conf, method, by_name=False):
             email = (email or "").lower()
             dec = decisions.get((mat, platform, email))
             if dec == "rejeitar":
                 return
+            if by_name and dec != "confirmar":
+                v, txt = domain_verdict(t.get("company"), email, domain_map)
+                if v == "outra":
+                    notes.append(f"Descartado ({label_of(platform)}): {txt}")
+                    return
+                if txt:
+                    method = f"{method} · {txt}"
             if dec == "confirmar":
                 conf, method = AGIR, method + " · confirmado manualmente"
             elif cap and conf == AGIR:
@@ -283,7 +324,7 @@ def build_matches(terminations, m365, google, docusign, others, decisions):
                          "confidence": conf, "method": method}
 
         # 1) Quem é a pessoa no M365 (é o diretório que tem a matrícula)
-        ident, conf, method = [], None, None
+        ident, conf, method, ident_by_name = [], None, None, False
         email_rh = (t.get("email_rh") or "").lower()
         login = [u for u in by_login.get(strip_mat(mat), [])
                  if strip_mat(u["employee_id"]) in ("", strip_mat(mat))]
@@ -301,32 +342,39 @@ def build_matches(terminations, m365, google, docusign, others, decisions):
             outra_mat = [u for u in cands if strip_mat(u["employee_id"]) not in ("", strip_mat(mat))]
             if outra_mat:
                 notes.append("Homônimo descartado no M365: conta com o mesmo nome pertence a outra matrícula")
+            # nome igual mas e-mail de outra empresa: homônimo, não é identidade
+            descart = [u for u in sem_mat if domain_verdict(t.get("company"), u["email"] or u["upn"], domain_map)[0] == "outra"
+                       and decisions.get((mat, "365", (u["email"] or u["upn"]).lower())) != "confirmar"]
+            for u in descart:
+                notes.append("Descartado (Microsoft 365): "
+                             + domain_verdict(t.get("company"), u["email"] or u["upn"], domain_map)[1])
+            sem_mat = [u for u in sem_mat if u not in descart]
             if sem_mat:
-                ident, conf = sem_mat, REVISAR
+                ident, conf, ident_by_name = sem_mat, REVISAR, True
                 method = ("Nome igual no M365 (conta sem matrícula cadastrada)" if len(sem_mat) == 1
                           else f"Nome igual em {len(sem_mat)} contas do M365 (ambíguo)")
 
         for u in ident:
             if u["enabled"]:
-                add("365", u["email"] or u["upn"], u["name"], "ativa", conf, method)
+                add("365", u["email"] or u["upn"], u["name"], "ativa", conf, method, by_name=ident_by_name)
 
         # 2) E-mails da pessoa → encontrá-la nos outros sistemas (cada um usa um domínio)
         addrs = {}
         for u in ident:
             for a in [u["email"], u["upn"], *u["aliases"]]:
                 if a:
-                    addrs[a.lower()] = (conf, f"{method} → mesmo e-mail")
+                    addrs[a.lower()] = (conf, f"{method} → mesmo e-mail", ident_by_name)
         if email_rh:
-            addrs[email_rh] = (AGIR, "E-mail informado pelo RH")
+            addrs[email_rh] = (AGIR, "E-mail informado pelo RH", False)
             if email_rh in m_by_mail and m_by_mail[email_rh]["enabled"]:
                 u = m_by_mail[email_rh]
                 add("365", u["email"] or u["upn"], u["name"], "ativa", AGIR, "E-mail informado pelo RH")
 
         def propagate(platform, by_mail, by_first, label):
             found = False
-            for a, (c, m) in addrs.items():
+            for a, (c, m, bn) in addrs.items():
                 for acc in by_mail.get(a, []):
-                    add(platform, acc["email"], acc.get("label") or acc["name"], acc.get("status", "ativa"), c, m)
+                    add(platform, acc["email"], acc.get("label") or acc["name"], acc.get("status", "ativa"), c, m, by_name=bn)
                     found = True
             if found or not by_first:
                 return
@@ -337,17 +385,17 @@ def build_matches(terminations, m365, google, docusign, others, decisions):
             if exatos:
                 tag = "" if len(exatos) == 1 else f" ({len(exatos)} contas, ambíguo)"
                 for a in exatos:
-                    add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR, f"Nome igual no {label}{tag}")
+                    add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR, f"Nome igual no {label}{tag}", by_name=True)
             elif len(compat) == 1:
                 a = compat[0]
                 add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR,
-                    f"Nome compatível no {label} (todos os termos constam no nome do RH)")
+                    f"Nome compatível no {label} (todos os termos constam no nome do RH)", by_name=True)
 
         propagate("google", g_mail, g_first, "Google")
         propagate("docusign", d_mail, d_first, "DocuSign")
-        for a, (c, m) in addrs.items():
+        for a, (c, m, bn) in addrs.items():
             for o in o_mail.get(a, []):
-                add(o["platform"], o["email"], o["name"], "ativa", c, m)
+                add(o["platform"], o["email"], o["name"], "ativa", c, m, by_name=bn)
 
         detail = " | ".join(n for n in notes if n)
         for r in rows.values():

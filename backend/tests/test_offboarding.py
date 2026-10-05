@@ -16,8 +16,16 @@ def term(mat, name, email_rh="", rehire=None, detail=None, saida="2026-09-10"):
             "email_rh": email_rh, "rehire_status": rehire, "rehire_detail": detail}
 
 
-def run(terms, m=(), google=(), ds=(), others=(), decisions=None):
-    return ob.build_matches(list(terms), list(m), list(google), list(ds), list(others), decisions or {})
+DMAP = {"grupo": {"comporte.com.br"},
+        "empresas": {"piracicabana": {"piracicabana.com.br"}, "metro bh": {"metrobh.com.br"}}}
+
+
+def run(terms, m=(), google=(), ds=(), others=(), decisions=None, dmap=None):
+    return ob.build_matches(list(terms), list(m), list(google), list(ds), list(others), decisions or {}, dmap)
+
+
+def gacc(email, name):
+    return {"email": email, "name": name, "active": True, "status": "ativa"}
 
 
 def test_matricula_e_certeza_e_propaga_pelo_email():
@@ -107,3 +115,47 @@ def test_matricula_no_login_com_nome_diferente_vai_para_revisao():
     _, people = run([term("10055690", "ADEMIR DA SILVA")],
                     m=[m365("10055690@holding.onmicrosoft.com", "Carlos Pereira")])
     assert people["10055690"][0] == "revisar"
+
+
+def pira(mat, name):
+    t = term(mat, name)
+    t["company"] = "Viacao Piracicabana SA"
+    return t
+
+
+def test_candidato_por_nome_com_dominio_de_outra_empresa_e_descartado():
+    matches, people = run([pira("10016137", "HELIO PEREIRA CAMPOS")],
+                          google=[gacc("helio.pereira@metrobh.com.br", "Hélio Pereira")], dmap=DMAP)
+    assert matches == [] and people["10016137"][0] == "sem_conta"
+    assert "metrobh.com.br" in people["10016137"][1]
+
+
+def test_candidato_por_nome_com_dominio_da_empresa_continua_em_revisao():
+    matches, _ = run([pira("1", "HELIO PEREIRA CAMPOS")],
+                     google=[gacc("helio.pereira@piracicabana.com.br", "Hélio Pereira")], dmap=DMAP)
+    assert matches[0]["confidence"] == "revisar" and "confere" in matches[0]["method"]
+
+
+def test_dominio_do_grupo_nao_descarta():
+    matches, _ = run([pira("1", "HELIO PEREIRA CAMPOS")],
+                     google=[gacc("helio@comporte.com.br", "Hélio Pereira")], dmap=DMAP)
+    assert matches[0]["confidence"] == "revisar"
+
+
+def test_matricula_ignora_filtro_de_dominio_transferencia():
+    matches, people = run([pira("5", "LUCAS REIS")],
+                          m=[m365("lucas@metrobh.com.br", "Lucas Reis", emp="5")], dmap=DMAP)
+    assert people["5"][0] == "agir"
+
+
+def test_confirmacao_manual_vence_o_filtro_de_dominio():
+    matches, _ = run([pira("9", "HELIO PEREIRA CAMPOS")],
+                     google=[gacc("helio.pereira@metrobh.com.br", "Hélio Pereira")], dmap=DMAP,
+                     decisions={("9", "google", "helio.pereira@metrobh.com.br"): "confirmar"})
+    assert matches[0]["confidence"] == "agir"
+
+
+def test_mapa_de_dominios_do_repo_e_valido():
+    import os
+    dm = ob.load_domain_map(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "company_domains.json"))
+    assert ob.domain_verdict("Viacao Piracicabana SA", "x@metrobh.com.br", dm)[0] == "outra"

@@ -72,6 +72,11 @@ export default function Users(){
   const allSelected=visibleAccounts.length>0&&visibleAccounts.every(a=>selected.has(accKey(a.matricula,a.platform,a.account_email)));
   const toggleAll=()=>setSelected(allSelected?new Set():new Set(visibleAccounts.map(a=>accKey(a.matricula,a.platform,a.account_email))));
   const openModal=()=>setModalItems(visibleAccounts.filter(a=>selected.has(accKey(a.matricula,a.platform,a.account_email))));
+  const toggleMode=async()=>{
+    const on=!config?.enabled;
+    if(on&&!window.confirm('Ligar o MODO REAL? A partir daqui, "Desativar" altera as contas de verdade no M365, Google e DocuSign.'))return;
+    try{setConfig(await api.post('/offboarding/actions/mode',{enabled:on}));}catch(e){setError(e.message||'Erro ao trocar o modo.');}
+  };
   const reactivate=async a=>{
     if(!window.confirm(`Reativar ${a.account_email} (${PL[a.platform]||a.platform})? O match será marcado como "Não é a pessoa".`))return;
     setBusy(a.id);try{await api.post('/offboarding/reactivate',{action_id:a.id});load();}catch(e){setError(e.message||'Erro ao reativar.');}finally{setBusy(null);}
@@ -103,7 +108,12 @@ export default function Users(){
     {tab==='risk'&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.75rem',padding:'0.6rem 0.9rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',boxShadow:'var(--shadow-sm)'}}>
       <label style={{display:'flex',gap:8,alignItems:'center',fontSize:'0.8rem',color:'var(--text2)'}}><input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={!visibleAccounts.length}/>Selecionar todas ({visibleAccounts.length} contas{platform?` · ${PL[platform]}`:''})</label>
       <div style={{display:'flex',gap:10,alignItems:'center'}}>
-        {config&&<span style={{fontSize:'0.72rem',padding:'2px 8px',borderRadius:10,border:`1px solid ${config.enabled?'var(--red)':'var(--blue-500)'}`,color:config.enabled?'var(--red)':'var(--blue-500)'}}>{config.enabled?'Ações reais ligadas':'Modo simulação'}</span>}
+        {config&&(config.allowed
+          ?<button onClick={toggleMode} title={config.enabled?'Clique para voltar à simulação':'Clique para ligar as ações reais'} style={{display:'flex',alignItems:'center',gap:8,padding:'0.3rem 0.7rem',borderRadius:20,border:`1px solid ${config.enabled?'var(--red)':'var(--border)'}`,background:config.enabled?'#fee2e2':'var(--bg3)',color:config.enabled?'var(--red)':'var(--text2)',fontSize:'0.75rem',fontWeight:600}}>
+              <span style={{width:28,height:16,borderRadius:8,background:config.enabled?'var(--red)':'var(--border2, #cbd5e1)',position:'relative',transition:'background 0.15s'}}><span style={{position:'absolute',top:2,left:config.enabled?14:2,width:12,height:12,borderRadius:'50%',background:'#fff',transition:'left 0.15s'}}/></span>
+              {config.enabled?'Modo real':'Simulação'}
+            </button>
+          :<span title="OFFBOARDING_ACTIONS_ENABLED=false no .env do servidor" style={{fontSize:'0.72rem',padding:'2px 8px',borderRadius:10,border:'1px solid var(--blue-500)',color:'var(--blue-500)'}}>Simulação (travado no servidor)</span>)}
         <button onClick={openModal} disabled={!selected.size} style={{display:'flex',alignItems:'center',gap:6,padding:'0.45rem 1rem',background:'var(--red)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontWeight:600,fontSize:'0.8rem',opacity:selected.size?1:0.45}}><Power size={14}/>Desativar selecionadas ({selected.size})</button>
       </div>
     </div>}
@@ -112,7 +122,7 @@ export default function Users(){
     {tab==='risk'&&<Table headers={['Pessoa','Contas ativas','Risco']} loading={loading} count={data.length} empty="✓ Nenhum desligado com acesso ativo confirmado" emptyColor="var(--green)">
       {data.map(u=><Row key={u.matricula}>
         <td style={td}><Person name={u.name} matricula={u.matricula} company={u.department} date={u.termination_date}/></td>
-        <td style={td}><div style={{display:'flex',flexDirection:'column',gap:4}}>{(u.accounts||[]).filter(a=>!platform||a.platform===platform).map((a,i)=>{const k=accKey(u.matricula,a.platform,a.email);return<label key={i} style={{display:'flex',gap:6,alignItems:'center',cursor:'pointer'}}><input type="checkbox" checked={selected.has(k)} onChange={()=>toggle(k)}/><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}} title={a.method}>{a.email}</span>{!API_PLATFORMS.includes(a.platform)&&<span style={{fontSize:'0.65rem',color:'var(--text3)'}}>(manual)</span>}</label>;})}</div></td>
+        <td style={td}><div style={{display:'flex',flexDirection:'column',gap:4}}>{(u.accounts||[]).filter(a=>!platform||a.platform===platform).map((a,i)=>{const k=accKey(u.matricula,a.platform,a.email);return<label key={i} style={{display:'flex',gap:6,alignItems:'center',cursor:'pointer'}}><input type="checkbox" checked={selected.has(k)} onChange={()=>toggle(k)}/><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}} title={a.method}>{a.email}</span>{!API_PLATFORMS.includes(a.platform)&&<span style={{fontSize:'0.65rem',color:'var(--text3)'}}>(manual)</span>}{a.guest&&<span title="Conta convidada (#EXT#) no tenant da holding: desativar só tira o acesso à holding. A caixa de e-mail real fica em outro tenant." style={{fontSize:'0.65rem',color:'#d97706',border:'1px solid #fcd34d',borderRadius:4,padding:'0 4px'}}>convidado</span>}</label>;})}</div></td>
         <td style={td}><RiskBadge level={u.risk_level}/></td>
       </Row>)}
     </Table>}
@@ -153,8 +163,8 @@ export default function Users(){
       {data.map(a=>{const[l,c]=ACT_STATUS[a.status]||[a.status,'var(--text3)'];return<Row key={a.id}>
         <td style={{...td,...mono,whiteSpace:'nowrap',color:'var(--text2)'}}>{a.created_at?.slice(0,16)}</td>
         <td style={td}><div style={{fontWeight:500}}>{a.person_name||'—'}</div><div style={{...mono,color:'var(--text3)'}}>mat. {a.matricula}</div></td>
-        <td style={td}><div style={{display:'flex',gap:6,alignItems:'center'}}><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}}>{a.account_email}</span></div></td>
-        <td style={{...td,fontSize:'0.78rem'}}>{a.action==='reativar'?'Reativar':'Desativar'}</td>
+        <td style={td}>{a.action==='modo'?'—':<div style={{display:'flex',gap:6,alignItems:'center'}}><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}}>{a.account_email}</span></div>}</td>
+        <td style={{...td,fontSize:'0.78rem'}}>{{reativar:'Reativar',modo:'Modo'}[a.action]||'Desativar'}</td>
         <td style={{...td,fontSize:'0.75rem',maxWidth:320}}><span style={{color:c,fontWeight:600}}>{l}</span><div style={{color:'var(--text2)',marginTop:2}}>{a.detail}</div></td>
         <td style={{...td,...mono,color:'var(--text3)'}}>{a.actor}</td>
         <td style={td}>{a.can_reactivate&&<button disabled={busy===a.id} onClick={()=>reactivate(a)} title="Desfazer" style={{display:'flex',alignItems:'center',gap:4,padding:'0.3rem 0.6rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text2)',fontSize:'0.72rem',whiteSpace:'nowrap'}}><RotateCcw size={12}/>Reativar</button>}</td>

@@ -119,6 +119,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, matricula TEXT, person_name TEXT, company TEXT,
         termination_date TEXT, platform TEXT, account_email TEXT, account_name TEXT,
         account_status TEXT, confidence TEXT, method TEXT, detail TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY, value TEXT, updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     c.execute("""CREATE TABLE IF NOT EXISTS offboarding_actions (
         id INTEGER PRIMARY KEY AUTOINCREMENT, matricula TEXT, person_name TEXT, platform TEXT,
         account_email TEXT, action TEXT, status TEXT, detail TEXT, extra TEXT, actor TEXT,
@@ -242,6 +244,7 @@ def get_risk_users(search: str="", platform: str=""):
             q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
             params += [f"%{search.lower()}%"] * 3
         rows = conn.execute(q + " ORDER BY termination_date DESC, person_name", params).fetchall()
+        guests = {r[0] for r in conn.execute("SELECT LOWER(email) FROM ms365_users WHERE upn LIKE '%#EXT#%'")}
     finally:
         conn.close()
     people = {}
@@ -255,7 +258,8 @@ def get_risk_users(search: str="", platform: str=""):
         if r["platform"] not in p["active_platforms"]:
             p["active_platforms"].append(r["platform"])
         p["accounts"].append({"platform": r["platform"], "email": r["account_email"],
-                              "name": r["account_name"], "method": r["method"]})
+                              "name": r["account_name"], "method": r["method"],
+                              "guest": r["platform"] == "365" and r["account_email"] in guests})
     result = [p for p in people.values() if not platform or platform in p["active_platforms"]]
     for p in result:
         n = len(p["active_platforms"])
@@ -1321,8 +1325,24 @@ from fastapi import Request
 API_PLATFORMS = ("365", "google", "docusign")
 MAX_BATCH = 25
 
-def _actions_enabled() -> bool:
+def _actions_allowed() -> bool:
+    """Trava do servidor (.env). Se false, nem o botão da tela consegue ligar o modo real."""
     return os.getenv("OFFBOARDING_ACTIONS_ENABLED", "false").strip().lower() == "true"
+
+def _actions_enabled() -> bool:
+    if not _actions_allowed():
+        return False
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT value FROM app_settings WHERE key='offboarding_live'").fetchone()
+    finally:
+        conn.close()
+    return bool(r) and r["value"] == "true"
+
+def _m365_key(conn, email):
+    """Graph endereça por id/UPN. Convidados (#EXT#) não são achados pelo e-mail."""
+    r = conn.execute("SELECT upn FROM ms365_users WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email)).fetchone()
+    return (r["upn"] if r and r["upn"] else email)
 
 def _protected_emails() -> set:
     return {e.strip().lower() for e in os.getenv("OFFBOARDING_PROTECTED_EMAILS", "").split(",") if e.strip()}
@@ -1369,11 +1389,14 @@ def _deactivate(conn, m, remove_licenses):
     if m["platform"] == "365":
         cfg = get_graph_config()
         token = get_graph_token(cfg["tenant_id"], cfg["client_id"], cfg["client_secret"])
-        graph_api.set_account_enabled(token, email, False)
-        graph_api.revoke_sessions(token, email)
-        skus = graph_api.remove_all_licenses(token, email) if remove_licenses else []
+        key = _m365_key(conn, email)
+        graph_api.set_account_enabled(token, key, False)
+        graph_api.revoke_sessions(token, key)
+        skus = graph_api.remove_all_licenses(token, key) if remove_licenses else []
         conn.execute("UPDATE ms365_users SET account_enabled=0 WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email))
         det = "Entrada bloqueada e sessões revogadas" + (f"; {len(skus)} licença(s) removida(s)" if skus else "")
+        if "#ext#" in key.lower():
+            det += " (conta convidada: só perde o acesso à holding)"
         return det, {"licenses_removed": skus}
     if m["platform"] == "google":
         _google_post("suspend", email)
@@ -1412,9 +1435,31 @@ class DeactivateRequest(BaseModel):
 
 @app.get("/offboarding/actions/config")
 def offboarding_actions_config():
-    return {"enabled": _actions_enabled(), "max_batch": MAX_BATCH,
+    return {"enabled": _actions_enabled(), "allowed": _actions_allowed(), "max_batch": MAX_BATCH,
             "google_ready": bool(os.getenv("GOOGLE_APPS_SCRIPT_TOKEN")),
             "protected": len(_protected_emails())}
+
+class ModeRequest(BaseModel):
+    enabled: bool
+
+@app.post("/offboarding/actions/mode")
+def offboarding_actions_mode(req: ModeRequest, request: Request):
+    """Liga/desliga o modo real pela tela. Fica registrado no histórico."""
+    if req.enabled and not _actions_allowed():
+        raise HTTPException(status_code=400, detail="O servidor não permite ações reais (OFFBOARDING_ACTIONS_ENABLED=false no .env).")
+    actor = _actor(request)
+    conn = get_db()
+    try:
+        conn.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('offboarding_live', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
+            ("true" if req.enabled else "false", actor))
+        conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action, status, detail, actor)
+            VALUES ('', '', '-', '', 'modo', 'ok', ?, ?)""",
+            ("Modo real LIGADO" if req.enabled else "Modo real desligado (simulação)", actor))
+        conn.commit()
+    finally:
+        conn.close()
+    return offboarding_actions_config()
 
 @app.post("/offboarding/deactivate")
 def offboarding_deactivate(req: DeactivateRequest, request: Request):
@@ -1505,9 +1550,10 @@ def offboarding_reactivate(req: ReactivateRequest, request: Request):
             if a["platform"] == "365":
                 cfg = get_graph_config()
                 token = get_graph_token(cfg["tenant_id"], cfg["client_id"], cfg["client_secret"])
-                graph_api.set_account_enabled(token, email, True)
+                key = _m365_key(conn, email)
+                graph_api.set_account_enabled(token, key, True)
                 skus = (json.loads(a["extra"] or "{}") or {}).get("licenses_removed") or []
-                graph_api.add_licenses(token, email, skus)
+                graph_api.add_licenses(token, key, skus)
                 conn.execute("UPDATE ms365_users SET account_enabled=1 WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email))
                 det = "Entrada liberada" + (f"; {len(skus)} licença(s) devolvida(s)" if skus else "")
             else:

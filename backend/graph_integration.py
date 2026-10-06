@@ -108,7 +108,8 @@ def _write_error(resp, what):
     return Exception(f"Erro Graph ao {what} ({resp.status_code}): {resp.text[:300]}")
 
 def _user_url(key: str) -> str:
-    return f"{GRAPH_BASE}/users/{requests.utils.quote(key)}"
+    # '#' de convidados (#EXT#) precisa virar %23; '@' pode ficar
+    return f"{GRAPH_BASE}/users/{requests.utils.quote(key, safe='@')}"
 
 def set_account_enabled(token: str, key: str, enabled: bool) -> None:
     resp = requests.patch(_user_url(key), json={"accountEnabled": enabled},

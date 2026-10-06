@@ -35,7 +35,7 @@ export default function DeactivateModal({items,config,onClose,onDone}){
         <div style={{display:'flex',gap:8,alignItems:'center'}}><ShieldAlert size={18} color="var(--red)"/><h2 style={{fontSize:'1rem',fontWeight:700}}>Desativar {items.length} conta{items.length>1?'s':''}</h2></div>
         <button onClick={result?onDone:onClose} disabled={running} style={{background:'none',border:'none',color:'var(--text2)'}}><X size={18}/></button>
       </div>
-      {!real&&<div style={{margin:'0.9rem 1.25rem 0',padding:'0.6rem 0.9rem',background:'var(--accent-bg)',border:'1px solid var(--blue-200)',borderRadius:'var(--radius)',fontSize:'0.78rem',color:'var(--blue-700)'}}>Modo <strong>simulação</strong>: as ações estão desligadas no servidor (<code>OFFBOARDING_ACTIONS_ENABLED</code>). Nada será alterado nos sistemas, só registrado no histórico.</div>}
+      {!real&&<div style={{margin:'0.9rem 1.25rem 0',padding:'0.6rem 0.9rem',background:'var(--accent-bg)',border:'1px solid var(--blue-200)',borderRadius:'var(--radius)',fontSize:'0.78rem',color:'var(--blue-700)'}}>Modo <strong>simulação</strong>: nada será alterado nos sistemas, só registrado no histórico. Para valer de verdade, ligue o <strong>Modo real</strong> na barra da aba Remover acesso.</div>}
       <div style={{overflowY:'auto',padding:'0.9rem 1.25rem',flex:1}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:'0.8rem'}}>
           <thead><tr>{['Pessoa','Sistema','Conta',result?'Resultado':'O que será feito'].map(h=><th key={h} style={{textAlign:'left',padding:'0.4rem 0.5rem',fontSize:'0.7rem',color:'var(--text2)',textTransform:'uppercase',letterSpacing:0.6}}>{h}</th>)}</tr></thead>

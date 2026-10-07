@@ -1621,7 +1621,7 @@ def offboarding_ad_local_script():
     finally:
         conn.close()
     lines = "\n".join(f"    '{r['upn']}'   # mat. {r['matricula']} - {(r['person_name'] or '').replace(chr(39), '')}" for r in rows)
-    from fastapi.responses import PlainTextResponse
+    from fastapi.responses import Response
     script = f"""# AccessGuard - desativar no AD LOCAL contas de desligados ({datetime.now():%d/%m/%Y %H:%M})
 # {len(rows)} conta(s). O Entra Connect replica para o Azure/M365 no próximo ciclo (~30 min).
 #
@@ -1633,7 +1633,18 @@ def offboarding_ad_local_script():
 # Do seu PC (com RSAT), apontando para um controlador de domínio e/ou outra conta:
 #      .\\desativar-ad-local.ps1 -Server dc01.dominio.local -Credential (Get-Credential)
 param([switch]$Executar, [string]$Server, [pscredential]$Credential)
+
+# ===== No PowerShell ISE (botão Play): troque para $true para desativar de verdade =====
+$MODO_REAL = $false
+# =======================================================================================
+if ($MODO_REAL) {{ $Executar = $true }}
+
 Import-Module ActiveDirectory -ErrorAction Stop
+if ($Executar) {{
+    $log = Join-Path ([Environment]::GetFolderPath('Desktop')) ("desativar-ad-local-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+    Start-Transcript -Path $log | Out-Null
+    Write-Host "MODO REAL - log em $log" -ForegroundColor Red
+}}
 $ad = @{{}}
 if ($Server) {{ $ad.Server = $Server }}
 if ($Credential) {{ $ad.Credential = $Credential }}
@@ -1653,6 +1664,7 @@ foreach ($upn in $contas) {{
         Write-Host "[simulação] desativaria: $upn" -ForegroundColor Cyan
     }}
 }}
-if (-not $Executar) {{ Write-Host "`nNada foi alterado. Rode com -Executar para desativar." }}
+if ($Executar) {{ Stop-Transcript | Out-Null; Write-Host "`nConcluído. Log salvo em $log" }} else {{ Write-Host "`nNada foi alterado. Para valer: troque `$MODO_REAL para `$true (linha do topo) e clique em Play, ou rode com -Executar." }}
 """
-    return PlainTextResponse(script, headers={"Content-Disposition": 'attachment; filename="desativar-ad-local.ps1"'})
+    return Response(("\ufeff" + script.replace("\n", "\r\n")).encode("utf-8"), media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="desativar-ad-local.ps1"'})

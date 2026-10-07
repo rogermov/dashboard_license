@@ -144,6 +144,7 @@ def init_db():
     for col_sql in ["ALTER TABLE platform_users ADD COLUMN display_name TEXT",
                     "ALTER TABLE ms365_users ADD COLUMN employee_id TEXT",   # matrícula SAP
                     "ALTER TABLE ms365_users ADD COLUMN aliases TEXT",
+                    "ALTER TABLE ms365_users ADD COLUMN on_prem INTEGER DEFAULT 0",   # sincronizada do AD local
                     "CREATE INDEX IF NOT EXISTS idx_ms365_employee ON ms365_users(employee_id)"]:
         try: c.execute(col_sql)
         except: pass
@@ -245,6 +246,7 @@ def get_risk_users(search: str="", platform: str=""):
             params += [f"%{search.lower()}%"] * 3
         rows = conn.execute(q + " ORDER BY termination_date DESC, person_name", params).fetchall()
         guests = {r[0] for r in conn.execute("SELECT LOWER(email) FROM ms365_users WHERE upn LIKE '%#EXT#%'")}
+        ad_local = {r[0] for r in conn.execute("SELECT LOWER(email) FROM ms365_users WHERE on_prem=1")}
     finally:
         conn.close()
     people = {}
@@ -259,7 +261,8 @@ def get_risk_users(search: str="", platform: str=""):
             p["active_platforms"].append(r["platform"])
         p["accounts"].append({"platform": r["platform"], "email": r["account_email"],
                               "name": r["account_name"], "method": r["method"],
-                              "guest": r["platform"] == "365" and r["account_email"] in guests})
+                              "guest": r["platform"] == "365" and r["account_email"] in guests,
+                              "ad_local": r["platform"] == "365" and r["account_email"] in ad_local})
     result = [p for p in people.values() if not platform or platform in p["active_platforms"]]
     for p in result:
         n = len(p["active_platforms"])
@@ -862,10 +865,12 @@ def microsoft365_sync():
             emp_id = (u.get("employeeId") or "").strip()
             aliases = sorted({p.split(":", 1)[1].lower() for p in (u.get("proxyAddresses") or []) if p.lower().startswith("smtp:")}
                              | {m.lower() for m in (u.get("otherMails") or []) if m})
-            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases) VALUES (?, ?, ?, ?, ?, ?, ?)
+            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases, on_prem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
-                licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases, imported_at=CURRENT_TIMESTAMP""",
-                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases)))
+                licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases,
+                on_prem=excluded.on_prem, imported_at=CURRENT_TIMESTAMP""",
+                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases),
+                 1 if u.get("onPremisesSyncEnabled") else 0))
 
             if enabled and has_paid_license(part_numbers):
                 conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
@@ -1388,6 +1393,9 @@ def _deactivate(conn, m, remove_licenses):
     email = m["account_email"]
     if m["platform"] == "365":
         cfg = get_graph_config()
+        onp = conn.execute("SELECT on_prem FROM ms365_users WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email)).fetchone()
+        if onp and onp["on_prem"]:
+            raise Exception("Conta sincronizada do AD local: desative no Active Directory (o Entra replica).")
         token = get_graph_token(cfg["tenant_id"], cfg["client_id"], cfg["client_secret"])
         key = _m365_key(conn, email)
         graph_api.set_account_enabled(token, key, False)

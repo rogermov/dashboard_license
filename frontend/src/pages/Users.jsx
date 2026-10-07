@@ -41,7 +41,7 @@ export default function Users(){
   const[params,setParams]=useSearchParams();
   const tab=TABS.some(t=>t.id===params.get('tab'))?params.get('tab'):'risk';
   const setTab=id=>setParams(id==='risk'?{}:{tab:id});
-  const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');
+  const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');const[kind,setKind]=useState('');
   const[data,setData]=useState([]);const[loading,setLoading]=useState(false);const[error,setError]=useState(null);
   const[busy,setBusy]=useState(null);
   const[selected,setSelected]=useState(new Set());const[config,setConfig]=useState(null);const[modalItems,setModalItems]=useState(null);
@@ -66,8 +66,13 @@ export default function Users(){
     }catch(e){setError(e.message||'Erro ao salvar a decisão.');}finally{setBusy(null);}
   };
 
-  // Contas visíveis na aba Remover (respeita o filtro de plataforma)
-  const visibleAccounts=tab==='risk'?data.flatMap(u=>(u.accounts||[]).filter(a=>!platform||a.platform===platform).map(a=>({matricula:u.matricula,person_name:u.name,platform:a.platform,account_email:a.email}))):[];
+  // Filtros da aba Remover: plataforma + tipo de conta. "Com domínio" = e-mail da empresa
+  // (não @...onmicrosoft.com): são as que ficaram ativas e têm prioridade.
+  const isTenant=e=>/onmicrosoft\.com$/i.test(e||'');
+  const accOk=a=>(!platform||a.platform===platform)&&(!kind||(kind==='domain'?!isTenant(a.email):isTenant(a.email)));
+  const riskRows=tab==='risk'?data.filter(u=>(u.accounts||[]).some(accOk)).sort((x,y)=>(x.accounts.some(a=>accOk(a)&&!isTenant(a.email))?0:1)-(y.accounts.some(a=>accOk(a)&&!isTenant(a.email))?0:1)):data;
+  const domainCount=tab==='risk'?data.reduce((n,u)=>n+(u.accounts||[]).filter(a=>(!platform||a.platform===platform)&&!isTenant(a.email)).length,0):0;
+  const visibleAccounts=tab==='risk'?riskRows.flatMap(u=>(u.accounts||[]).filter(accOk).map(a=>({matricula:u.matricula,person_name:u.name,platform:a.platform,account_email:a.email}))):[];
   const toggle=k=>setSelected(s=>{const n=new Set(s);n.has(k)?n.delete(k):n.add(k);return n;});
   const allSelected=visibleAccounts.length>0&&visibleAccounts.every(a=>selected.has(accKey(a.matricula,a.platform,a.account_email)));
   const toggleAll=()=>setSelected(allSelected?new Set():new Set(visibleAccounts.map(a=>accKey(a.matricula,a.platform,a.account_email))));
@@ -101,6 +106,7 @@ export default function Users(){
     <ErrorBanner message={error} onRetry={load}/>
     <div style={{display:'flex',gap:'0.6rem',marginBottom:'1rem'}}>
       <div style={{position:'relative',flex:1}}><Search size={14} color="var(--text3)" style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)'}}/><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder="Buscar por nome, matrícula ou e-mail... (Enter)" style={{...inputStyle,width:'100%',padding:'0.6rem 0.75rem 0.6rem 2.1rem'}} onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>
+      {tab==='risk'&&<select value={kind} onChange={e=>{setKind(e.target.value);setSelected(new Set());}} style={inputStyle}><option value="">Todas as contas</option><option value="domain">Com domínio da empresa ({domainCount}) ★</option><option value="tenant">Só @onmicrosoft.com</option></select>}
       {(tab==='risk'||tab==='review')&&<select value={platform} onChange={e=>setPlatform(e.target.value)} style={inputStyle}><option value="">Todas plataformas</option>{PLATFORMS.map(p=><option key={p} value={p}>{PL[p]}</option>)}</select>}
       <button onClick={()=>exportCSV(exportRows(),`${fileName}-${today()}.csv`)} disabled={!data.length} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.6rem 0.9rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text2)',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)',opacity:data.length?1:0.5}}><Download size={13}/>CSV</button>
     </div>
@@ -119,10 +125,10 @@ export default function Users(){
     </div>}
     {modalItems&&<DeactivateModal items={modalItems} config={config} onClose={()=>setModalItems(null)} onDone={()=>{setModalItems(null);load();}}/>}
 
-    {tab==='risk'&&<Table headers={['Pessoa','Contas ativas','Risco']} loading={loading} count={data.length} empty="✓ Nenhum desligado com acesso ativo confirmado" emptyColor="var(--green)">
-      {data.map(u=><Row key={u.matricula}>
+    {tab==='risk'&&<Table headers={['Pessoa','Contas ativas','Risco']} loading={loading} count={riskRows.length} empty="✓ Nenhum desligado com acesso ativo confirmado" emptyColor="var(--green)">
+      {riskRows.map(u=><Row key={u.matricula}>
         <td style={td}><Person name={u.name} matricula={u.matricula} company={u.department} date={u.termination_date}/></td>
-        <td style={td}><div style={{display:'flex',flexDirection:'column',gap:4}}>{(u.accounts||[]).filter(a=>!platform||a.platform===platform).map((a,i)=>{const k=accKey(u.matricula,a.platform,a.email);return<label key={i} style={{display:'flex',gap:6,alignItems:'center',cursor:'pointer'}}><input type="checkbox" checked={selected.has(k)} onChange={()=>toggle(k)}/><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}} title={a.method}>{a.email}</span>{!API_PLATFORMS.includes(a.platform)&&<span style={{fontSize:'0.65rem',color:'var(--text3)'}}>(manual)</span>}{a.guest&&<span title="Conta convidada (#EXT#) no tenant da holding: desativar só tira o acesso à holding. A caixa de e-mail real fica em outro tenant." style={{fontSize:'0.65rem',color:'#d97706',border:'1px solid #fcd34d',borderRadius:4,padding:'0 4px'}}>convidado</span>}</label>;})}</div></td>
+        <td style={td}><div style={{display:'flex',flexDirection:'column',gap:4}}>{(u.accounts||[]).filter(accOk).map((a,i)=>{const k=accKey(u.matricula,a.platform,a.email);return<label key={i} style={{display:'flex',gap:6,alignItems:'center',cursor:'pointer'}}><input type="checkbox" checked={selected.has(k)} onChange={()=>toggle(k)}/><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}} title={a.method}>{a.email}</span>{!API_PLATFORMS.includes(a.platform)&&<span style={{fontSize:'0.65rem',color:'var(--text3)'}}>(manual)</span>}{a.ad_local&&<span title="Sincronizada do AD local: o painel não consegue desativar. Desative no Active Directory (o Entra replica)." style={{fontSize:'0.65rem',color:'var(--red)',border:'1px solid #fca5a5',borderRadius:4,padding:'0 4px'}}>AD local</span>}{a.guest&&<span title="Conta convidada (#EXT#) no tenant da holding: desativar só tira o acesso à holding. A caixa de e-mail real fica em outro tenant." style={{fontSize:'0.65rem',color:'#d97706',border:'1px solid #fcd34d',borderRadius:4,padding:'0 4px'}}>convidado</span>}</label>;})}</div></td>
         <td style={td}><RiskBadge level={u.risk_level}/></td>
       </Row>)}
     </Table>}

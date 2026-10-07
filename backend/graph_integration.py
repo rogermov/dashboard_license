@@ -45,7 +45,7 @@ def get_users(token: str) -> list:
     # employeeId = matrícula do SAP (chave do offboarding); proxyAddresses/otherMails =
     # aliases, usados para achar a pessoa nos outros sistemas.
     url = (f"{GRAPH_BASE}/users?$select=id,displayName,mail,userPrincipalName,"
-           f"accountEnabled,assignedLicenses,employeeId,proxyAddresses,otherMails&$top=999")
+           f"accountEnabled,assignedLicenses,employeeId,proxyAddresses,otherMails,onPremisesSyncEnabled&$top=999")
     all_users = []
     while url:
         resp = requests.get(url, headers=headers, timeout=30)
@@ -102,6 +102,8 @@ def sku_friendly_name(sku_part_number: str) -> str:
 #   LicenseAssignment.ReadWrite.All → só se for remover licenças
 
 def _write_error(resp, what):
+    if "on-premise" in resp.text.lower() or "directory sync" in resp.text.lower():
+        return Exception("Conta sincronizada do AD local: desative no Active Directory (o Entra replica).")
     if resp.status_code in (401, 403):
         return Exception(f"Sem permissão no Microsoft Graph para {what} ({resp.status_code}). "
                          f"Conceda a permissão de aplicação no App Registration e o consentimento de admin.")

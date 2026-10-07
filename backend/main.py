@@ -283,9 +283,8 @@ def get_all_terminated(search: str=""):
         rows = [dict(r) for r in conn.execute(q + " ORDER BY termination_date DESC, name", params).fetchall()]
         done = {}
         for a in conn.execute("SELECT matricula, platform, account_email, created_at FROM offboarding_actions a "
-                              "WHERE action='desativar' AND status IN ('ok','manual') AND NOT EXISTS ("
-                              "SELECT 1 FROM offboarding_actions r WHERE r.action='reativar' AND r.status='ok' "
-                              "AND r.extra=CAST(a.id AS TEXT)) ORDER BY id"):
+                              f"WHERE action='desativar' AND status IN ('ok','manual') AND NOT EXISTS ({_UNDONE_SQL}) "
+                              "ORDER BY id"):
             done.setdefault(a["matricula"], []).append(f'{a["platform"]}: {a["account_email"]} ({a["created_at"][:10]})')
         for r in rows:
             r["deactivated"] = done.get(r["matricula"], [])
@@ -888,9 +887,11 @@ def microsoft365_sync():
 
         conn.execute("""INSERT INTO ms365_sync_log (id, synced_at, error) VALUES (1, CURRENT_TIMESTAMP, NULL)
             ON CONFLICT(id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL""")
+        revertidas = _reconcile_m365_actions(conn)
         conn.commit()
         _safe_rebuild_offboarding()
-        return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga."}
+        aviso = f" ⚠ {revertidas} conta(s) desativada(s) pelo painel voltaram a ficar ativas (ver Histórico)." if revertidas else ""
+        return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga.{aviso}"}
     except Exception as e:
         print(f"Erro no microsoft365_sync: {e}")
         conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
@@ -1526,7 +1527,7 @@ def offboarding_actions(search: str = "", limit: int = 500):
             params = [f"%{search.lower()}%"] * 3
         rows = [dict(r) for r in conn.execute(q + " ORDER BY id DESC LIMIT ?", (*params, min(limit, 2000)))]
         undone = {r[0] for r in conn.execute("SELECT CAST(extra AS INTEGER) FROM offboarding_actions "
-                                            "WHERE action='reativar' AND status='ok'")}
+                                            "WHERE (action='reativar' AND status='ok') OR action='revertido'")}
     finally:
         conn.close()
     for r in rows:
@@ -1585,3 +1586,68 @@ def offboarding_reactivate(req: ReactivateRequest, request: Request):
         conn.close()
     _safe_rebuild_offboarding()
     return {"message": det}
+
+
+# Desfeito = reativado pelo painel OU revertido por sincronização externa (AD local).
+_UNDONE_SQL = ("SELECT 1 FROM offboarding_actions r WHERE r.extra=CAST(a.id AS TEXT) AND "
+               "((r.action='reativar' AND r.status='ok') OR r.action='revertido')")
+
+def _reconcile_m365_actions(conn) -> int:
+    """Depois do sync do M365: conta que o painel desativou e voltou a ficar ativa
+    (ex.: Entra Connect sobrescrevendo a partir do AD local) vira um alerta no Histórico."""
+    rows = conn.execute(f"""SELECT a.*, u.on_prem FROM offboarding_actions a
+        JOIN ms365_users u ON LOWER(u.email)=a.account_email OR LOWER(u.upn)=a.account_email
+        WHERE a.platform='365' AND a.action='desativar' AND a.status='ok' AND u.account_enabled=1
+        AND NOT EXISTS ({_UNDONE_SQL})""").fetchall()
+    for a in rows:
+        det = "Voltou a ficar ATIVA no Azure após a desativação"
+        det += (": conta sincronizada do AD local, desative no Active Directory (use o script PowerShell)"
+                if a["on_prem"] else ": verifique se alguém a reativou")
+        conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
+            status, detail, extra, actor) VALUES (?,?,?,?,'revertido','alerta',?,?,'sync')""",
+            (a["matricula"], a["person_name"], "365", a["account_email"], det, str(a["id"])))
+    return len(rows)
+
+@app.get("/offboarding/ad-local-script")
+def offboarding_ad_local_script():
+    """Script PowerShell para desativar no AD local as contas em 'Remover' que vêm do AD
+    (o Graph não consegue: o Entra Connect sobrescreve a nuvem)."""
+    conn = get_db()
+    try:
+        rows = conn.execute("""SELECT DISTINCT m.matricula, m.person_name, u.upn FROM offboarding_matches m
+            JOIN ms365_users u ON LOWER(u.email)=m.account_email OR LOWER(u.upn)=m.account_email
+            WHERE m.platform='365' AND m.confidence='agir' AND u.on_prem=1 AND u.account_enabled=1
+            ORDER BY u.upn""").fetchall()
+    finally:
+        conn.close()
+    lines = "\n".join(f"    '{r['upn']}'   # mat. {r['matricula']} - {(r['person_name'] or '').replace(chr(39), '')}" for r in rows)
+    from fastapi.responses import PlainTextResponse
+    script = f"""# AccessGuard - desativar no AD LOCAL contas de desligados ({datetime.now():%d/%m/%Y %H:%M})
+# {len(rows)} conta(s). O Entra Connect replica para o Azure/M365 no próximo ciclo (~30 min).
+#
+# Rodar num servidor do domínio com o módulo ActiveDirectory (RSAT), como admin do AD.
+# 1) Primeiro SEM parâmetro: só mostra o que faria.
+#      .\\desativar-ad-local.ps1
+# 2) Conferiu? Rode de verdade:
+#      .\\desativar-ad-local.ps1 -Executar
+param([switch]$Executar)
+Import-Module ActiveDirectory
+
+$contas = @(
+{lines}
+)
+
+foreach ($upn in $contas) {{
+    $u = Get-ADUser -Filter "UserPrincipalName -eq '$upn'" -Properties Enabled
+    if (-not $u) {{ Write-Warning "Não encontrado no AD: $upn"; continue }}
+    if (-not $u.Enabled) {{ Write-Host "Já desativada: $upn"; continue }}
+    if ($Executar) {{
+        Disable-ADAccount -Identity $u
+        Write-Host "DESATIVADA: $upn" -ForegroundColor Yellow
+    }} else {{
+        Write-Host "[simulação] desativaria: $upn" -ForegroundColor Cyan
+    }}
+}}
+if (-not $Executar) {{ Write-Host "`nNada foi alterado. Rode com -Executar para desativar." }}
+"""
+    return PlainTextResponse(script, headers={"Content-Disposition": 'attachment; filename="desativar-ad-local.ps1"'})

@@ -11,7 +11,7 @@ import DeactivateModal,{API_PLATFORMS} from '../components/DeactivateModal.jsx';
 const TABS=[{id:'risk',label:'Remover acesso'},{id:'review',label:'Revisar'},{id:'licensed',label:'Licenças M365'},{id:'all',label:'Todos desligados'},{id:'history',label:'Histórico'}];
 const ENDPOINT={risk:'/users/risk',review:'/offboarding/review',licensed:'/offboarding/m365-licensed',all:'/users/terminated',history:'/offboarding/actions'};
 const STATUS={agir:['Remover','var(--red)'],revisar:['Revisar','#d97706'],recontratado:['Recontratado','var(--green)'],sem_conta:['Sem conta ativa','var(--text3)'],fora_da_gestao:['Fora da gestão','var(--text3)']};
-const ACT_STATUS={ok:['Feito','var(--green)'],manual:['Feito (manual)','var(--green)'],simulado:['Simulado','var(--blue-500)'],erro:['Erro','var(--red)'],bloqueado:['Bloqueado','#d97706']};
+const ACT_STATUS={alerta:['Voltou a ficar ativa','#d97706'],ok:['Feito','var(--green)'],manual:['Feito (manual)','var(--green)'],simulado:['Simulado','var(--blue-500)'],erro:['Erro','var(--red)'],bloqueado:['Bloqueado','#d97706']};
 const accKey=(mat,platform,email)=>`${mat}|${platform}|${email}`;
 const fmtDate=d=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(d||'');return m?`${m[3]}/${m[2]}/${m[1]}`:(d||'—');};
 const today=()=>new Date().toISOString().slice(0,10);
@@ -77,6 +77,12 @@ export default function Users(){
   const allSelected=visibleAccounts.length>0&&visibleAccounts.every(a=>selected.has(accKey(a.matricula,a.platform,a.account_email)));
   const toggleAll=()=>setSelected(allSelected?new Set():new Set(visibleAccounts.map(a=>accKey(a.matricula,a.platform,a.account_email))));
   const openModal=()=>setModalItems(visibleAccounts.filter(a=>selected.has(accKey(a.matricula,a.platform,a.account_email))));
+  const adLocalCount=tab==='risk'?data.reduce((n,u)=>n+(u.accounts||[]).filter(a=>a.ad_local).length,0):0;
+  const downloadAdScript=async()=>{
+    try{const r=await fetch('/api/offboarding/ad-local-script');if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      const url=URL.createObjectURL(await r.blob());const el=document.createElement('a');el.href=url;el.download='desativar-ad-local.ps1';document.body.appendChild(el);el.click();el.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);
+    }catch(e){setError(e.message||'Erro ao gerar o script.');}
+  };
   const toggleMode=async()=>{
     const on=!config?.enabled;
     if(on&&!window.confirm('Ligar o MODO REAL? A partir daqui, "Desativar" altera as contas de verdade no M365, Google e DocuSign.'))return;
@@ -120,6 +126,7 @@ export default function Users(){
               {config.enabled?'Modo real':'Simulação'}
             </button>
           :<span title="OFFBOARDING_ACTIONS_ENABLED=false no .env do servidor" style={{fontSize:'0.72rem',padding:'2px 8px',borderRadius:10,border:'1px solid var(--blue-500)',color:'var(--blue-500)'}}>Simulação (travado no servidor)</span>)}
+        {adLocalCount>0&&<button onClick={downloadAdScript} title="Contas sincronizadas do AD local não podem ser desativadas pelo painel: o Entra Connect reativa. Baixe o script para o admin do AD rodar." style={{display:'flex',alignItems:'center',gap:6,padding:'0.45rem 0.8rem',background:'var(--bg2)',border:'1px solid #fca5a5',borderRadius:'var(--radius)',color:'var(--red)',fontSize:'0.78rem'}}><Download size={13}/>Script AD local ({adLocalCount})</button>}
         <button onClick={openModal} disabled={!selected.size} style={{display:'flex',alignItems:'center',gap:6,padding:'0.45rem 1rem',background:'var(--red)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontWeight:600,fontSize:'0.8rem',opacity:selected.size?1:0.45}}><Power size={14}/>Desativar selecionadas ({selected.size})</button>
       </div>
     </div>}
@@ -170,7 +177,7 @@ export default function Users(){
         <td style={{...td,...mono,whiteSpace:'nowrap',color:'var(--text2)'}}>{a.created_at?.slice(0,16)}</td>
         <td style={td}><div style={{fontWeight:500}}>{a.person_name||'—'}</div><div style={{...mono,color:'var(--text3)'}}>mat. {a.matricula}</div></td>
         <td style={td}>{a.action==='modo'?'—':<div style={{display:'flex',gap:6,alignItems:'center'}}><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}}>{a.account_email}</span></div>}</td>
-        <td style={{...td,fontSize:'0.78rem'}}>{{reativar:'Reativar',modo:'Modo'}[a.action]||'Desativar'}</td>
+        <td style={{...td,fontSize:'0.78rem'}}>{{reativar:'Reativar',modo:'Modo',revertido:'Verificação'}[a.action]||'Desativar'}</td>
         <td style={{...td,fontSize:'0.75rem',maxWidth:320}}><span style={{color:c,fontWeight:600}}>{l}</span><div style={{color:'var(--text2)',marginTop:2}}>{a.detail}</div></td>
         <td style={{...td,...mono,color:'var(--text3)'}}>{a.actor}</td>
         <td style={td}>{a.can_reactivate&&<button disabled={busy===a.id} onClick={()=>reactivate(a)} title="Desfazer" style={{display:'flex',alignItems:'center',gap:4,padding:'0.3rem 0.6rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text2)',fontSize:'0.72rem',whiteSpace:'nowrap'}}><RotateCcw size={12}/>Reativar</button>}</td>

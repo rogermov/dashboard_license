@@ -1630,19 +1630,24 @@ def offboarding_ad_local_script():
 #      .\\desativar-ad-local.ps1
 # 2) Conferiu? Rode de verdade:
 #      .\\desativar-ad-local.ps1 -Executar
-param([switch]$Executar)
-Import-Module ActiveDirectory
+# Do seu PC (com RSAT), apontando para um controlador de domínio e/ou outra conta:
+#      .\\desativar-ad-local.ps1 -Server dc01.dominio.local -Credential (Get-Credential)
+param([switch]$Executar, [string]$Server, [pscredential]$Credential)
+Import-Module ActiveDirectory -ErrorAction Stop
+$ad = @{{}}
+if ($Server) {{ $ad.Server = $Server }}
+if ($Credential) {{ $ad.Credential = $Credential }}
 
 $contas = @(
 {lines}
 )
 
 foreach ($upn in $contas) {{
-    $u = Get-ADUser -Filter "UserPrincipalName -eq '$upn'" -Properties Enabled
+    $u = Get-ADUser @ad -Filter "UserPrincipalName -eq '$upn'" -Properties Enabled
     if (-not $u) {{ Write-Warning "Não encontrado no AD: $upn"; continue }}
     if (-not $u.Enabled) {{ Write-Host "Já desativada: $upn"; continue }}
     if ($Executar) {{
-        Disable-ADAccount -Identity $u
+        Disable-ADAccount @ad -Identity $u
         Write-Host "DESATIVADA: $upn" -ForegroundColor Yellow
     }} else {{
         Write-Host "[simulação] desativaria: $upn" -ForegroundColor Cyan

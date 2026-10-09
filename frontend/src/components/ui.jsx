@@ -75,21 +75,56 @@ export function Tabs({ tabs, value, onChange, label }) {
   );
 }
 
-// Toast simples: const [toast, show] = useToast(); show('ok') / show('falhou', true)
+// Toast: const [toast, show] = useToast();
+//   show('ok')  ·  show('falhou', true)  ·  show('feito', false, { label: 'Desfazer', onClick })
 export function useToast() {
   const [toast, setToast] = useState(null);
   const timer = useRef();
-  const show = useCallback((msg, error = false) => {
+  const show = useCallback((msg, error = false, action = null) => {
     clearTimeout(timer.current);
-    setToast({ msg, error });
-    timer.current = setTimeout(() => setToast(null), 5000);
+    setToast({ msg, error, action, id: Date.now() });
+    timer.current = setTimeout(() => setToast(null), action ? 8000 : 5000);
   }, []);
   const node = toast ? (
-    <div className={cx('toast', toast.error && 'toast--error')} role="status" aria-live="polite">
-      {toast.error ? <XCircle size={16} /> : <CheckCircle2 size={16} />}<span>{toast.msg}</span>
+    <div key={toast.id} className={cx('toast', toast.error && 'toast--error')} role="status" aria-live="polite">
+      {toast.error ? <XCircle size={16} /> : <CheckCircle2 size={16} />}<span style={{ flex: 1 }}>{toast.msg}</span>
+      {toast.action && (
+        <button type="button" className="btn btn--sm btn--on-dark" onClick={() => { setToast(null); toast.action.onClick(); }}>{toast.action.label}</button>
+      )}
     </div>
   ) : null;
   return [node, show];
+}
+
+const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+// Número que "conta" até o valor ao aparecer e ao mudar. Texto não numérico passa direto.
+export function CountUp({ value, duration = 700 }) {
+  const target = typeof value === 'number' ? value : Number.isFinite(Number(value)) && value !== '' && value !== null ? Number(value) : null;
+  const [shown, setShown] = useState(target === null ? value : 0);
+  const from = useRef(0);
+  useEffect(() => {
+    if (target === null) { setShown(value); return undefined; }
+    if (reducedMotion()) { setShown(target); from.current = target; return undefined; }
+    const start = performance.now(); const a = from.current; let raf;
+    const tick = now => {
+      const t = Math.min(1, (now - start) / duration); const e = 1 - Math.pow(1 - t, 3);
+      setShown(Math.round(a + (target - a) * e));
+      if (t < 1) raf = requestAnimationFrame(tick); else from.current = target;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return <>{typeof shown === 'number' ? shown.toLocaleString('pt-BR') : shown}</>;
+}
+
+// Esqueleto de carregamento: <Skeleton rows={4} height={64} />
+export function Skeleton({ rows = 3, height = 56, gap = 8 }) {
+  return (
+    <div className="stack" style={{ gap }} aria-busy="true" aria-label="Carregando">
+      {Array.from({ length: rows }, (_, i) => <div key={i} className="skeleton" style={{ height, opacity: 1 - i * 0.12 }} />)}
+    </div>
+  );
 }
 
 export const fmtDate = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || ''); return m ? `${m[3]}/${m[2]}/${m[1]}` : (d || '—'); };

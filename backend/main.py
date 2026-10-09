@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import sqlite3, pandas as pd, requests, io, re, os, unicodedata, json
@@ -145,6 +145,7 @@ def init_db():
                     "ALTER TABLE ms365_users ADD COLUMN employee_id TEXT",   # matrícula SAP
                     "ALTER TABLE ms365_users ADD COLUMN aliases TEXT",
                     "ALTER TABLE ms365_users ADD COLUMN on_prem INTEGER DEFAULT 0",   # sincronizada do AD local
+                    "ALTER TABLE offboarding_decisions ADD COLUMN decided_by TEXT",
                     "CREATE INDEX IF NOT EXISTS idx_ms365_employee ON ms365_users(employee_id)"]:
         try: c.execute(col_sql)
         except: pass
@@ -1268,7 +1269,7 @@ class OffboardingDecision(BaseModel):
     decision: str          # confirmar | rejeitar | desfazer
 
 @app.post("/offboarding/decision")
-def offboarding_decision(d: OffboardingDecision):
+def offboarding_decision(d: OffboardingDecision, request: Request):
     if d.decision not in ("confirmar", "rejeitar", "desfazer"):
         raise HTTPException(status_code=400, detail="Decisão inválida.")
     key = (d.matricula, d.platform, d.account_email.lower())
@@ -1277,13 +1278,29 @@ def offboarding_decision(d: OffboardingDecision):
         if d.decision == "desfazer":
             conn.execute("DELETE FROM offboarding_decisions WHERE matricula=? AND platform=? AND account_email=?", key)
         else:
-            conn.execute("""INSERT INTO offboarding_decisions (matricula, platform, account_email, decision) VALUES (?,?,?,?)
-                ON CONFLICT(matricula, platform, account_email) DO UPDATE SET decision=excluded.decision,
-                decided_at=CURRENT_TIMESTAMP""", (*key, d.decision))
+            conn.execute("""INSERT INTO offboarding_decisions (matricula, platform, account_email, decision, decided_by)
+                VALUES (?,?,?,?,?) ON CONFLICT(matricula, platform, account_email) DO UPDATE SET decision=excluded.decision,
+                decided_by=excluded.decided_by, decided_at=CURRENT_TIMESTAMP""", (*key, d.decision, _actor(request)))
         conn.commit()
     finally:
         conn.close()
     return rebuild_offboarding()
+
+@app.get("/offboarding/decisions")
+def offboarding_decisions(search: str = ""):
+    """Decisões manuais da revisão (para conferir e desfazer)."""
+    conn = get_db()
+    try:
+        q = """SELECT d.matricula, d.platform, d.account_email, d.decision, d.decided_at, d.decided_by,
+                      h.name AS person_name, h.company, h.termination_date
+               FROM offboarding_decisions d LEFT JOIN hr_terminations h ON h.matricula = d.matricula"""
+        params = []
+        if search:
+            q += " WHERE LOWER(h.name) LIKE ? OR LOWER(d.account_email) LIKE ? OR d.matricula LIKE ?"
+            params = [f"%{search.lower()}%"] * 3
+        return [dict(r) for r in conn.execute(q + " ORDER BY d.decided_at DESC", params).fetchall()]
+    finally:
+        conn.close()
 
 # Pacotes que incluem os apps do Office (Word/Excel/Outlook...). Prioridade na remoção:
 # é licença paga parada em conta de desligado.

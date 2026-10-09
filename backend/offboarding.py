@@ -315,6 +315,11 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
             dec = decisions.get((mat, platform, email))
             if dec == "rejeitar":
                 return
+            if by_name:
+                # Login numérico com OUTRA matrícula: forte sinal de homônimo (ou erro de cadastro).
+                local = email.split("@")[0]
+                if local.isdigit() and strip_mat(local) != strip_mat(mat):
+                    method = f"{method} · ⚠ o login tem outra matrícula ({local})"
             if by_name and dec != "confirmar":
                 v, txt = domain_verdict(t.get("company"), email, domain_map)
                 if v == "outra":

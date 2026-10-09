@@ -5,7 +5,7 @@ import { useOffboarding } from '../../hooks/useOffboarding.jsx';
 import { exportCSV } from '../../lib/csv.js';
 import { PLATFORMS, PLATFORM_LABELS as PL } from '../../lib/platforms.js';
 import DeactivateModal from '../../components/DeactivateModal.jsx';
-import { Badge, Empty, Notice, PlatformTag, SearchInput, Segmented, Spinner, cx, fmtDate, useDebounced, useToast } from '../../components/ui.jsx';
+import { Badge, CountUp, Empty, Notice, PlatformTag, SearchInput, Segmented, Skeleton, cx, fmtDate, useDebounced, useToast } from '../../components/ui.jsx';
 
 // Em qual faixa cada conta cai. A ordem das faixas é a ordem de prioridade.
 const isTenant = e => /onmicrosoft\.com$/i.test(e || '');
@@ -151,7 +151,7 @@ export default function Remover() {
       </div>
 
       {error && <Notice tone="danger" action={<button className="btn btn--sm" onClick={load}>Tentar de novo</button>}>{error}</Notice>}
-      {loading && <div className="empty"><Spinner /> Carregando…</div>}
+      {loading && <div className="lanes">{[0, 1, 2].map(i => <div key={i} className="lane"><Skeleton rows={4} height={88} /></div>)}</div>}
 
       {!loading && !error && view === 'board' && (
         people.length === 0 ? <div className="card"><Empty title="Nenhum desligado com acesso ativo">Tudo limpo por aqui.</Empty></div> :
@@ -161,7 +161,7 @@ export default function Remover() {
             return (
               <section key={l.id} className={`lane lane--${l.id}`} aria-labelledby={`lane-${l.id}`}>
                 <div className="lane__head">
-                  <div className="lane__title"><span className="lane__dot" /><h2 id={`lane-${l.id}`}>{l.title}</h2><span className="mono small muted">{counts[l.id]}</span></div>
+                  <div className="lane__title"><span className="lane__dot" /><h2 id={`lane-${l.id}`}>{l.title}</h2><span className="mono small muted"><CountUp value={counts[l.id]} /></span></div>
                   <p className="lane__desc">{l.desc}</p>
                 </div>
                 <div className="lane__list">

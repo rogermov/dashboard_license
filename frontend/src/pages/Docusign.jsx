@@ -5,6 +5,7 @@ import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
 import ErrorBanner from '../components/ErrorBanner.jsx';
+import { CountUp } from '../components/ui.jsx';
 
 const SM = { active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, pending: { label: 'Pendente', color: 'var(--yellow)', bg: 'var(--yellow-bg)' } };
 
@@ -179,7 +180,7 @@ export default function Docusign() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: '0.85rem', marginBottom: '1.5rem' }}>
               <div style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.25rem', boxShadow: 'var(--shadow-sm)', borderTop: '3px solid var(--blue-400)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={15} color="var(--blue-600)" /><span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Professional Licença</span></div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.6rem' }}>{status.license_summary.professional} <span style={{ fontSize: '0.78rem', fontWeight: 500, color: 'var(--text3)' }}>atribuída(s)</span></div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.6rem' }}><CountUp value={status.license_summary.professional} /> <span style={{ fontSize: '0.78rem', fontWeight: 500, color: 'var(--text3)' }}>atribuída(s)</span></div>
                 {status.license_summary.included_seats != null && (() => {
                   const seats = status.license_summary.included_seats;
                   const used = status.license_summary.professional;
@@ -200,7 +201,7 @@ export default function Docusign() {
                         </span>
                       </div>
                       <div style={{ marginTop: '0.4rem', height: 5, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', width: `${Math.min(100, pct * 100)}%`, background: color }} />
+                        <div className="bar-fill" style={{ height: '100%', width: `${Math.min(100, pct * 100)}%`, background: color }} />
                       </div>
                     </div>
                   );

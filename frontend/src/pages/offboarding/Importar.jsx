@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Upload, RefreshCw, Link2, ArrowRight } from 'lucide-react';
 import { api } from '../../hooks/api.js';
 import { useOffboarding } from '../../hooks/useOffboarding.jsx';
-import { Notice, Spinner, cx, useToast } from '../../components/ui.jsx';
+import { CountUp, Notice, Spinner, cx, useToast } from '../../components/ui.jsx';
 
 // Sistemas sem API: lista de usuários exportada à mão.
 const CSV_PLATFORMS = [
@@ -104,10 +104,10 @@ export default function Importar() {
         {error && <Notice tone="danger">{error}</Notice>}
         {result && (
           <div className="stack" style={{ gap: 12 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+            <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
               {tiles.map(([l, v, c]) => (
                 <div key={l} className="card" style={{ padding: '12px 14px', background: 'var(--surface-2)' }}>
-                  <div className="xs muted">{l}</div><div style={{ fontSize: 'var(--text-2xl)', fontWeight: 600, color: c }}>{v ?? 0}</div>
+                  <div className="xs muted">{l}</div><div style={{ fontSize: 'var(--text-2xl)', fontWeight: 600, color: c }}><CountUp value={v ?? 0} /></div>
                 </div>
               ))}
             </div>
@@ -122,12 +122,12 @@ export default function Importar() {
       </form>
 
       <div className="page-header"><div><h2 className="h2">Atualizar os sistemas agora</h2><p className="lead">Roda sozinho às 07h30 em dias úteis. Use se precisar do estado atual antes disso.</p></div></div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+      <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {SYNCS.map(s => <SyncButton key={s.endpoint} {...s} onDone={done} />)}
       </div>
 
       <div className="page-header"><div><h2 className="h2">Sistemas sem integração</h2><p className="lead">Exporte a lista de usuários e solte aqui. O cruzamento usa os e-mails descobertos no Microsoft 365.</p></div></div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+      <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
         {CSV_PLATFORMS.map(p => (
           <div key={p.id} className="stack" style={{ gap: 6 }}>
             <span className="small" style={{ fontWeight: 600 }}>{p.label}</span>

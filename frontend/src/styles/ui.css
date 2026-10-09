@@ -227,3 +227,69 @@ a { color: var(--brand); }
   .lanes { grid-template-columns: 1fr; }
   .search { min-width: 0; width: 100%; }
 }
+
+/* ── Movimento ─────────────────────────────────────────────────────────────────
+   Tudo aqui. Durações/curvas em tokens.css. Quem pede "reduzir movimento" no
+   sistema operacional não vê nenhuma animação (bloco no fim).               */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes popIn { from { opacity: 0; transform: scale(.96) translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes slideUp { from { opacity: 0; transform: translate(-50%, 16px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes slideInRight { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+@keyframes growX { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes shimmer { from { background-position: -400px 0; } to { background-position: 400px 0; } }
+@keyframes pulseRing { 0% { box-shadow: 0 0 0 0 rgba(180, 83, 9, .35); } 100% { box-shadow: 0 0 0 10px rgba(180, 83, 9, 0); } }
+
+/* Entrada em cascata: blocos da página, filhos de .stagger, linhas de tabela */
+.page > * { animation: fadeUp var(--dur-med) var(--ease-out) both; }
+.page > *:nth-child(2) { animation-delay: 40ms; } .page > *:nth-child(3) { animation-delay: 80ms; }
+.page > *:nth-child(4) { animation-delay: 120ms; } .page > *:nth-child(n+5) { animation-delay: 160ms; }
+.stagger > *, .lane__list > *, .lanes > *, .stepper .step { animation: fadeUp var(--dur-med) var(--ease-out) both; }
+.stagger > *:nth-child(1), .lane__list > *:nth-child(1), .lanes > *:nth-child(1), .stepper li:nth-child(1) .step { animation-delay: 30ms; }
+.stagger > *:nth-child(2), .lane__list > *:nth-child(2), .lanes > *:nth-child(2), .stepper li:nth-child(2) .step { animation-delay: 70ms; }
+.stagger > *:nth-child(3), .lane__list > *:nth-child(3), .lanes > *:nth-child(3), .stepper li:nth-child(3) .step { animation-delay: 110ms; }
+.stagger > *:nth-child(4), .lane__list > *:nth-child(4), .stepper li:nth-child(4) .step { animation-delay: 150ms; }
+.stagger > *:nth-child(5), .lane__list > *:nth-child(5) { animation-delay: 190ms; }
+.stagger > *:nth-child(n+6), .lane__list > *:nth-child(n+6) { animation-delay: 230ms; }
+.table tbody tr { animation: fadeUp var(--dur-med) var(--ease-out) both; }
+.table tbody tr:nth-child(2) { animation-delay: 20ms; } .table tbody tr:nth-child(3) { animation-delay: 40ms; }
+.table tbody tr:nth-child(4) { animation-delay: 60ms; } .table tbody tr:nth-child(5) { animation-delay: 80ms; }
+.table tbody tr:nth-child(6) { animation-delay: 100ms; } .table tbody tr:nth-child(n+7) { animation-delay: 120ms; }
+
+/* Interação: tudo que é clicável reage */
+.btn { transition: background var(--dur-fast), border-color var(--dur-fast), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast), opacity var(--dur-fast); }
+.btn:not(:disabled):active { transform: scale(.97); }
+.btn--primary:not(:disabled):hover, .btn--priority:not(:disabled):hover, .btn--danger:not(:disabled):hover { box-shadow: var(--shadow-2); }
+.pcard, .card--interactive, .step { transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast); }
+.pcard:hover, .card--interactive:hover { transform: translateY(-2px); box-shadow: var(--shadow-2); }
+.pcard:active, .card--interactive:active { transform: translateY(0) scale(.99); }
+.pcard.is-selected { animation: selectPop var(--dur-med) var(--ease-spring); }
+@keyframes selectPop { 0% { transform: scale(.98); } 60% { transform: scale(1.01); } 100% { transform: none; } }
+.step:hover { transform: translateY(-1px); }
+.step.active::after { animation: growX var(--dur-med) var(--ease-out) both; transform-origin: left; }
+.step--alert .step__num { animation: pulseRing 1.8s ease-out infinite; }
+.checkbox { transition: transform var(--dur-fast) var(--ease-spring); }
+.checkbox:active { transform: scale(.85); }
+.tabs__btn, .seg__btn, .topnav__link { transition: color var(--dur-fast), background var(--dur-fast), border-color var(--dur-med) var(--ease-out), box-shadow var(--dur-fast); }
+.mode-toggle { transition: background var(--dur-med), border-color var(--dur-med), color var(--dur-med); }
+.mode-toggle__track::after { transition: left var(--dur-med) var(--ease-spring); }
+
+/* Barras de uso/licença: crescem da esquerda ao aparecer e ao mudar de valor */
+.bar-fill { transform-origin: left; animation: growX var(--dur-slow) var(--ease-out) both; transition: width var(--dur-slow) var(--ease-out), background var(--dur-med); }
+
+/* Camadas: modal, barra de seleção, aviso */
+.modal-backdrop { animation: fadeIn var(--dur-med) ease both; }
+.modal { animation: popIn var(--dur-med) var(--ease-spring) both; }
+.selbar { animation: slideUp var(--dur-med) var(--ease-spring) both; }
+.toast { animation: slideInRight var(--dur-med) var(--ease-spring) both; }
+.notice { animation: fadeUp var(--dur-med) var(--ease-out) both; }
+
+/* Item saindo da lista (ex.: decidido na revisão) */
+.is-leaving { animation: none !important; transition: opacity var(--dur-med), transform var(--dur-med) var(--ease-out), max-height var(--dur-med); opacity: 0; transform: translateX(16px); }
+
+/* Carregando: esqueleto com brilho */
+.skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--sunken) 0, #F4F6F9 40%, var(--sunken) 80%);
+  background-size: 800px 100%; animation: shimmer 1.2s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

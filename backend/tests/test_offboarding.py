@@ -180,3 +180,8 @@ def test_google_por_employee_id_e_certeza():
     g = gacc("ana.l@empresa.com.br", "A. Lima"); g["employee_id"] = "0042"
     matches, people = run([term("42", "ANA LIMA")], google=[g])
     assert people["42"][0] == "agir" and matches[0]["method"].startswith("Matrícula = Employee ID")
+
+
+def test_nome_igual_com_login_de_outra_matricula_avisa():
+    matches, _ = run([term("10067704", "AMILTON SANTOS")], m=[m365("10067707@x.onmicrosoft.com", "Amilton Santos")])
+    assert matches[0]["confidence"] == "revisar" and "outra matrícula (10067707)" in matches[0]["method"]

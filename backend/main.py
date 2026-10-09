@@ -1125,11 +1125,21 @@ def alerts_changes_check():
 
 # ─── OFFBOARDING (motor de identidade) ─────────────────────────────────────────
 
+def _open_alerts(conn) -> int:
+    """Contas que o painel desativou e voltaram a ficar ativas (ainda ativas agora)."""
+    try:
+        return conn.execute("""SELECT COUNT(DISTINCT a.account_email) FROM offboarding_actions a
+            JOIN ms365_users u ON LOWER(u.email)=a.account_email OR LOWER(u.upn)=a.account_email
+            WHERE a.action='revertido' AND u.account_enabled=1""").fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+
 def _offboarding_summary(conn):
     st = {r[0]: r[1] for r in conn.execute("SELECT match_status, COUNT(*) FROM hr_terminations GROUP BY match_status")}
     return {"pessoas": sum(st.values()), "agir": st.get("agir", 0), "revisar": st.get("revisar", 0),
             "recontratados": st.get("recontratado", 0), "sem_conta": st.get("sem_conta", 0),
-            "fora_da_gestao": st.get("fora_da_gestao", 0)}
+            "fora_da_gestao": st.get("fora_da_gestao", 0), "alertas": _open_alerts(conn),
+            "ultima_importacao": conn.execute("SELECT MAX(imported_at) FROM hr_terminations").fetchone()[0]}
 
 def rebuild_offboarding():
     """Recalcula offboarding_matches a partir dos desligados importados e do estado atual

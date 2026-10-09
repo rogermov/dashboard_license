@@ -1,26 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-:root {
-  --blue-900:#0a1628;--blue-800:#0d2040;--blue-700:#0f3460;--blue-600:#1a4a8a;
-  --blue-500:#1e5fad;--blue-400:#2d7dd2;--blue-300:#5b9ee8;--blue-200:#a8ccf0;
-  --blue-100:#ddeaf8;--blue-50:#f0f6fd;
-  --bg:#f4f7fc;--bg2:#ffffff;--bg3:#f0f4fa;
-  --border:#dde4f0;--border2:#c8d4e8;
-  --text:#0d1f3c;--text2:#4a6080;--text3:#8aa0bc;
-  --accent:#1e5fad;--accent2:#2d7dd2;--accent-bg:#e8f1fb;
-  --red:#dc2626;--red-bg:#fef2f2;--green:#059669;--green-bg:#ecfdf5;
-  --yellow:#d97706;--yellow-bg:#fffbeb;
-  --shadow-sm:0 1px 3px rgba(10,22,40,0.08);--shadow:0 2px 8px rgba(10,22,40,0.10);--shadow-lg:0 4px 20px rgba(10,22,40,0.12);
-  --radius:8px;--radius-lg:12px;--font:'DM Sans',sans-serif;--font-mono:'DM Mono',monospace;
-}
-*{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;min-height:100vh;-webkit-font-smoothing:antialiased;}
-::-webkit-scrollbar{width:5px;height:5px;}
-::-webkit-scrollbar-track{background:var(--bg3);}
-::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
-button,input,select,textarea{font-family:var(--font);}
-/* Acessibilidade: anel de foco visível só na navegação por teclado (não atrapalha
-   o mouse). !important porque vários inputs tinham outline:none inline. */
-:focus-visible{outline:2px solid var(--accent) !important;outline-offset:2px;border-radius:4px;}
-a{color:var(--accent);}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
-@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+/* Estilos globais: tokens (cores, fontes) + componentes. Edite em styles/. */
+@import './styles/tokens.css';
+@import './styles/ui.css';

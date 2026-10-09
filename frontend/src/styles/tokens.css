@@ -1,0 +1,62 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   AccessGuard — tokens de design (direção "Fila de trabalho")
+
+   ÚNICO lugar para trocar cores, fontes, raios e sombras. Componentes usam só
+   estas variáveis (via classes em ui.css). Para mudar o visual do painel inteiro,
+   mude aqui.
+   ───────────────────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  /* Tipografia */
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-code: 'IBM Plex Mono', ui-monospace, monospace;
+  --text-xs: 12px; --text-sm: 13px; --text-md: 14px; --text-lg: 16px;
+  --text-xl: 22px; --text-2xl: 26px;
+
+  /* Superfícies e texto */
+  --ink: #0F1B2D;          /* texto principal e cabeçalho */
+  --ink-2: #33415C;        /* texto secundário forte */
+  --muted: #51607A;        /* legendas */
+  --subtle: #7A879B;       /* placeholders, desabilitado */
+  --canvas: #F3F5F7;       /* fundo da página */
+  --surface: #FFFFFF;      /* cards */
+  --surface-2: #F7F9FB;    /* linhas zebradas, inputs */
+  --sunken: #E9EDF2;       /* faixas (lanes), trilhos */
+  --line: #DCE2E9;         /* bordas */
+  --line-soft: #E9EDF2;    /* divisórias internas */
+
+  /* Marca e estados */
+  --brand: #0F766E;        --brand-strong: #0B5A54;  --brand-soft: #F0FDFA;  --brand-on-dark: #5EEAD4;
+  --priority: #B45309;     --priority-soft: #FEF3E2; --priority-line: #F5C98B;
+  --danger: #B42318;       --danger-soft: #FEF0EE;   --danger-line: #F6B9B2;
+  --success: #15803D;      --success-soft: #ECFDF3;  --success-line: #A6E3BD;
+  --warning: #A15C07;      --warning-soft: #FFFAEB;  --warning-line: #F7D58A;
+  --info: #1E4FA8;         --info-soft: #EEF3FC;     --info-line: #BFD0F0;
+
+  /* Plataformas */
+  --p-365: #1E4FA8; --p-google: #B42318; --p-docusign: #6B3FB8;
+  --p-lucid: #B45309; --p-jira: #0B6BCB; --p-bitbucket: #0F766E;
+
+  /* Forma */
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(15, 27, 45, .06);
+  --shadow-2: 0 4px 14px rgba(15, 27, 45, .08);
+  --shadow-3: 0 16px 40px rgba(15, 27, 45, .22);
+  --page-max: 1360px;
+
+  /* ── Compatibilidade: nomes antigos usados pelas telas ainda não migradas ── */
+  --font: var(--font-sans); --font-mono: var(--font-code);
+  --bg: var(--canvas); --bg2: var(--surface); --bg3: var(--surface-2);
+  --border: var(--line); --border2: #C9D2DD;
+  --text: var(--ink); --text2: var(--muted); --text3: var(--subtle);
+  --accent: var(--brand); --accent2: var(--brand-strong); --accent-bg: var(--brand-soft);
+  --red: var(--danger); --red-bg: var(--danger-soft);
+  --green: var(--success); --green-bg: var(--success-soft);
+  --yellow: var(--warning); --yellow-bg: var(--warning-soft);
+  --blue-900: var(--ink); --blue-800: #172A45; --blue-700: #1F3B63; --blue-600: #24508A;
+  --blue-500: var(--info); --blue-400: #3A6BC4; --blue-300: #7F9FD8; --blue-200: var(--info-line);
+  --blue-100: #DCE6F7; --blue-50: #F3F7FB;
+  --radius: var(--r-md); --radius-lg: var(--r-lg);
+  --shadow-sm: var(--shadow-1); --shadow: var(--shadow-2); --shadow-lg: var(--shadow-2);
+}

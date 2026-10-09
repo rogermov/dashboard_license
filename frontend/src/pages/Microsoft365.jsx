@@ -5,6 +5,7 @@ import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
 import ErrorBanner from '../components/ErrorBanner.jsx';
+import { CountUp } from '../components/ui.jsx';
 
 export default function Microsoft365() {
   const [status, setStatus] = useState(null);
@@ -99,7 +100,7 @@ export default function Microsoft365() {
       </div>
 
       {licenses.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: '0.85rem', marginBottom: '1.5rem' }}>
+        <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: '0.85rem', marginBottom: '1.5rem' }}>
           {licenses.map(l => {
             const total = l.total || 0;
             const ratio = total > 0 ? l.consumed / total : 0;
@@ -108,11 +109,11 @@ export default function Microsoft365() {
             const near = !over && ratio >= 0.9;                 // 90%+ dos assentos usados
             const color = over ? 'var(--red)' : near ? 'var(--yellow)' : 'var(--blue-400)';
             return (
-              <div key={l.sku_id} style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.1rem', boxShadow: 'var(--shadow-sm)', borderTop: `3px solid ${color}` }}>
+              <div key={l.sku_id} className="card--interactive" style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.1rem', boxShadow: 'var(--shadow-sm)', borderTop: `3px solid ${color}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={14} color="var(--blue-600)" /><span style={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.3 }}>{l.friendly_name}</span></div>
-                <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{l.consumed} <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text3)' }}>/ {total}</span></div>
+                <div style={{ fontSize: '1.2rem', fontWeight: 700 }}><CountUp value={l.consumed} /> <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text3)' }}>/ {total}</span></div>
                 <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: '0.5rem', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${pct}%`, background: color }} />
+                  <div className="bar-fill" style={{ height: '100%', width: `${pct}%`, background: color }} />
                 </div>
                 {(over || near) && (
                   <div style={{ fontSize: '0.66rem', fontWeight: 600, color, marginTop: '0.4rem' }}>

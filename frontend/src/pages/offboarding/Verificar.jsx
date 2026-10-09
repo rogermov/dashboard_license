@@ -4,7 +4,7 @@ import { api } from '../../hooks/api.js';
 import { useOffboarding } from '../../hooks/useOffboarding.jsx';
 import { exportCSV } from '../../lib/csv.js';
 import { PLATFORM_LABELS as PL } from '../../lib/platforms.js';
-import { Badge, Empty, Notice, PlatformTag, SearchInput, Spinner, Tabs, fmtDate, fmtDateTime, useDebounced, useToast } from '../../components/ui.jsx';
+import { Badge, Empty, Notice, PlatformTag, SearchInput, Skeleton, Tabs, fmtDate, fmtDateTime, useDebounced, useToast } from '../../components/ui.jsx';
 
 const ACT_STATUS = {
   ok: ['Feito', 'success'], manual: ['Feito (manual)', 'success'], simulado: ['Simulado', 'info'],
@@ -106,7 +106,7 @@ export default function Verificar() {
       ]} />
 
       {error && <Notice tone="danger" action={<button className="btn btn--sm" onClick={load}>Tentar de novo</button>}>{error}</Notice>}
-      {loading ? <div className="empty"><Spinner /> Carregando…</div> : !error && (
+      {loading ? <Skeleton rows={6} height={52} /> : !error && (
         <>
           {tab === 'alerts' && (
             <div className="stack" style={{ gap: 12 }}>

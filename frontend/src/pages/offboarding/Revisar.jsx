@@ -1,27 +1,38 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, X, Download } from 'lucide-react';
+import { Check, X, Download, Undo2 } from 'lucide-react';
 import { api } from '../../hooks/api.js';
 import { useOffboarding } from '../../hooks/useOffboarding.jsx';
 import { exportCSV } from '../../lib/csv.js';
 import { PLATFORMS, PLATFORM_LABELS as PL } from '../../lib/platforms.js';
-import { Badge, Empty, Notice, PlatformTag, SearchInput, Spinner, fmtDate, useDebounced, useToast } from '../../components/ui.jsx';
+import { Badge, Empty, Notice, PlatformTag, SearchInput, Skeleton, Tabs, cx, fmtDate, fmtDateTime, useDebounced, useToast } from '../../components/ui.jsx';
+
+const mkey = m => `${m.matricula}|${m.platform}|${m.account_email}`;
+const LEAVE_MS = 260; // casa com --dur-med (animação de saída)
 
 export default function Revisar() {
   const { refresh } = useOffboarding();
+  const [tab, setTab] = useState('pending');
   const [items, setItems] = useState([]);
+  const [decisions, setDecisions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
   const [platform, setPlatform] = useState('');
   const [busy, setBusy] = useState(null);
+  const [leaving, setLeaving] = useState(() => new Set());
   const q = useDebounced(search);
   const [toast, showToast] = useToast();
 
   const load = async () => {
     setLoading(true); setError(null);
     const p = new URLSearchParams(); if (q) p.append('search', q); if (platform) p.append('platform', platform);
-    try { setItems(await api.get(`/offboarding/review?${p}`, { noCache: true })); }
-    catch (e) { setError(e.message || 'Erro ao carregar.'); }
+    try {
+      const [rv, dc] = await Promise.all([
+        api.get(`/offboarding/review?${p}`, { noCache: true }),
+        api.get(`/offboarding/decisions${q ? `?search=${encodeURIComponent(q)}` : ''}`, { noCache: true }),
+      ]);
+      setItems(rv); setDecisions(platform ? dc.filter(d => d.platform === platform) : dc);
+    } catch (e) { setError(e.message || 'Erro ao carregar.'); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [q, platform]);
@@ -36,12 +47,27 @@ export default function Revisar() {
     return [...m.values()];
   }, [items]);
 
+  const undo = async (d) => {
+    try {
+      await api.post('/offboarding/decision', { matricula: d.matricula, platform: d.platform, account_email: d.account_email, decision: 'desfazer' });
+      showToast(`Decisão desfeita: ${d.account_email} voltou para a revisão.`);
+      await load(); refresh();
+    } catch (e) { showToast(e.message || 'Erro ao desfazer.', true); }
+  };
+
   const decide = async (m, decision) => {
-    const k = `${m.matricula}|${m.platform}|${m.account_email}`; setBusy(k);
+    const k = mkey(m); setBusy(k);
     try {
       await api.post('/offboarding/decision', { matricula: m.matricula, platform: m.platform, account_email: m.account_email, decision });
-      setItems(list => list.filter(x => `${x.matricula}|${x.platform}|${x.account_email}` !== k));
-      showToast(decision === 'confirmar' ? `Confirmado: ${m.account_email} foi para "Remover acesso".` : `Descartado: ${m.account_email} não é ${m.person_name}.`);
+      setLeaving(s => new Set(s).add(k));
+      setTimeout(() => {
+        setItems(list => list.filter(x => mkey(x) !== k));
+        setLeaving(s => { const n = new Set(s); n.delete(k); return n; });
+      }, LEAVE_MS);
+      setDecisions(list => [{ ...m, decision, decided_at: new Date().toISOString().replace('T', ' ').slice(0, 19), decided_by: 'você' },
+        ...list.filter(x => mkey(x) !== k)]);
+      showToast(decision === 'confirmar' ? `Confirmado: ${m.account_email} foi para "Remover acesso".` : `Descartado: ${m.account_email} não é ${m.person_name}.`,
+        false, { label: 'Desfazer', onClick: () => undo(m) });
       refresh();
     } catch (e) { showToast(e.message || 'Erro ao salvar a decisão.', true); }
     finally { setBusy(null); }
@@ -53,7 +79,7 @@ export default function Revisar() {
       <div className="page-header">
         <div>
           <h1 className="h1">Revisar casos incertos</h1>
-          <p className="lead">Contas achadas só pelo nome, ou de pessoas que ainda aparecem ativas no censo. Confira e decida — as decisões valem para as próximas planilhas.</p>
+          <p className="lead">Contas achadas só pelo nome, ou de pessoas que ainda aparecem ativas no censo. Clicou errado? Use <strong>Desfazer</strong> no aviso ou na aba Decididos.</p>
         </div>
         <div className="row">
           <SearchInput value={search} onChange={setSearch} />
@@ -69,40 +95,68 @@ export default function Revisar() {
         </div>
       </div>
 
+      <Tabs label="Revisão" value={tab} onChange={setTab} tabs={[
+        { value: 'pending', label: 'Pendentes', count: items.length, tone: items.length ? 'warning' : undefined },
+        { value: 'decided', label: 'Decididos', count: decisions.length },
+      ]} />
+
       {error && <Notice tone="danger" action={<button className="btn btn--sm" onClick={load}>Tentar de novo</button>}>{error}</Notice>}
-      {loading ? <div className="empty"><Spinner /> Carregando…</div> : !error && groups.length === 0 ? (
-        <div className="card"><Empty title="Nada para revisar">Todos os casos incertos já foram decididos.</Empty></div>
-      ) : (
-        <div className="stack" style={{ gap: 12 }}>
-          {groups.map(g => (
-            <article key={g.matricula} className="card">
-              <div className="card__head">
-                <div>
-                  <div style={{ fontWeight: 600 }}>{g.person_name}</div>
-                  <div className="xs muted">{g.company} · saiu {fmtDate(g.termination_date)} · <span className="mono">mat. {g.matricula}</span></div>
+      {loading ? <Skeleton rows={4} height={96} /> : !error && tab === 'pending' && (
+        groups.length === 0 ? <div className="card"><Empty title="Nada para revisar">Todos os casos incertos já foram decididos.</Empty></div> : (
+          <div className="stack stagger" style={{ gap: 12 }}>
+            {groups.map(g => (
+              <article key={g.matricula} className={cx('card', g.matches.every(m => leaving.has(mkey(m))) && 'is-leaving')}>
+                <div className="card__head">
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{g.person_name}</div>
+                    <div className="xs muted">{g.company} · saiu {fmtDate(g.termination_date)} · <span className="mono">mat. {g.matricula}</span></div>
+                  </div>
+                  {g.detail && <Badge tone="warning">{g.detail.length > 70 ? g.detail.slice(0, 70) + '…' : g.detail}</Badge>}
                 </div>
-                {g.detail && <Badge tone="warning">{g.detail.length > 70 ? g.detail.slice(0, 70) + '…' : g.detail}</Badge>}
-              </div>
-              <div>
-                {g.matches.map(m => {
-                  const k = `${m.matricula}|${m.platform}|${m.account_email}`;
-                  return (
-                    <div key={k} className="row" style={{ padding: '14px 20px', borderTop: '1px solid var(--line-soft)', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                      <div style={{ minWidth: 260, flex: '1 1 300px' }}>
-                        <div className="row" style={{ gap: 6 }}><PlatformTag platform={m.platform} /><span style={{ fontWeight: 500 }}>{m.account_name || '—'}</span></div>
-                        <div className="mono small" style={{ color: 'var(--ink-2)', marginTop: 2 }}>{m.account_email}{m.account_status ? ` · ${m.account_status}` : ''}</div>
+                <div>
+                  {g.matches.map(m => {
+                    const k = mkey(m);
+                    return (
+                      <div key={k} className={cx('row', leaving.has(k) && 'is-leaving')} style={{ padding: '14px 20px', borderTop: '1px solid var(--line-soft)', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                        <div style={{ minWidth: 260, flex: '1 1 300px' }}>
+                          <div className="row" style={{ gap: 6 }}><PlatformTag platform={m.platform} /><span style={{ fontWeight: 500 }}>{m.account_name || '—'}</span></div>
+                          <div className="mono small" style={{ color: 'var(--ink-2)', marginTop: 2 }}>{m.account_email}{m.account_status ? ` · ${m.account_status}` : ''}</div>
+                        </div>
+                        <div className="small muted" style={{ flex: '2 1 320px' }}>{m.method}</div>
+                        <div className="row">
+                          <button type="button" className="btn btn--sm btn--danger" disabled={busy === k} onClick={() => decide(m, 'confirmar')}><Check size={14} />É a pessoa</button>
+                          <button type="button" className="btn btn--sm" disabled={busy === k} onClick={() => decide(m, 'rejeitar')}><X size={14} />Não é</button>
+                        </div>
                       </div>
-                      <div className="small muted" style={{ flex: '2 1 320px' }}>{m.method}</div>
-                      <div className="row">
-                        <button type="button" className="btn btn--sm btn--danger" disabled={busy === k} onClick={() => decide(m, 'confirmar')}><Check size={14} />É a pessoa</button>
-                        <button type="button" className="btn btn--sm" disabled={busy === k} onClick={() => decide(m, 'rejeitar')}><X size={14} />Não é</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </article>
-          ))}
+                    );
+                  })}
+                </div>
+              </article>
+            ))}
+          </div>
+        )
+      )}
+
+      {!loading && !error && tab === 'decided' && (
+        <div className="table-wrap">
+          <table className="table" style={{ minWidth: 820 }}>
+            <thead><tr><th>Pessoa</th><th>Conta</th><th>Decisão</th><th>Quando / por</th><th><span className="sr-only">Desfazer</span></th></tr></thead>
+            <tbody>
+              {decisions.length === 0 && <tr><td colSpan={5}><Empty title="Nenhuma decisão ainda" /></td></tr>}
+              {decisions.map(d => (
+                <tr key={mkey(d)}>
+                  <td><div style={{ fontWeight: 600 }}>{d.person_name || '—'}</div><div className="xs muted">{d.company} · <span className="mono">{d.matricula}</span></div></td>
+                  <td><div className="row" style={{ gap: 6 }}><PlatformTag platform={d.platform} /><span className="mono xs">{d.account_email}</span></div></td>
+                  <td>{d.decision === 'confirmar' ? <Badge tone="danger">É a pessoa → Remover</Badge> : <Badge>Não é a pessoa</Badge>}</td>
+                  <td className="xs muted"><span className="mono">{fmtDateTime(d.decided_at)}</span>{d.decided_by ? ` · ${d.decided_by}` : ''}</td>
+                  <td><button type="button" className="btn btn--sm" onClick={() => undo(d)}
+                    title={d.decision === 'confirmar' ? 'Volta para a revisão. Se a conta já foi desativada, reative em Verificar → Histórico.' : 'Volta para a revisão.'}>
+                    <Undo2 size={14} />Desfazer</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="table__foot">{decisions.length} decisões</div>
         </div>
       )}
     </>

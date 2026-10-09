@@ -7,12 +7,13 @@ import { api } from '../hooks/api.js';
 import { PLATFORM_COLORS as PC, PLATFORM_LABELS as PL } from '../lib/platforms.js';
 import RiskBadge from '../components/RiskBadge.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
+import { CountUp } from '../components/ui.jsx';
 function StatCard({label,value,sub,color,icon:Icon,loading}){
   return(<div style={{background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius-lg)',padding:'1.25rem 1.5rem',boxShadow:'var(--shadow-sm)',borderTop:`3px solid ${color||'var(--accent)'}`}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
       <div>
         <div style={{fontSize:'0.72rem',color:'var(--text2)',fontWeight:600,textTransform:'uppercase',letterSpacing:0.8,marginBottom:'0.5rem'}}>{label}</div>
-        <div style={{fontSize:'2rem',fontWeight:700,color:'var(--text)',lineHeight:1}}>{loading?'—':value}</div>
+        <div style={{fontSize:'2rem',fontWeight:700,color:'var(--text)',lineHeight:1}}>{loading?'—':<CountUp value={value}/>}</div>
         {sub&&<div style={{fontSize:'0.75rem',color:'var(--text3)',marginTop:'0.35rem'}}>{sub}</div>}
       </div>
       {Icon&&<div style={{width:40,height:40,borderRadius:10,background:`${color||'var(--accent)'}18`,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon size={20} color={color||'var(--accent)'} strokeWidth={1.8}/></div>}
@@ -63,7 +64,7 @@ const handleClearTerminated = async () => {
       </div>
     </div>
     <ErrorBanner message={error} onRetry={load}/>
-    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem',marginBottom:'1.5rem'}}>
+    <div className="stagger" style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem',marginBottom:'1.5rem'}}>
       <StatCard label="Desligados na base" icon={Users} loading={loading} value={stats?.total_terminated??0} sub="total importado do RH" color="var(--blue-500)"/>
       <StatCard label="Com acesso ativo" icon={AlertTriangle} loading={loading} value={stats?.terminated_with_active_access??0} sub="certeza (matrícula/e-mail) — remover" color="var(--red)"/>
       <Link to="/offboarding/revisar" style={{textDecoration:'none'}}><StatCard label="A revisar" icon={Activity} loading={loading} value={stats?.to_review??0} sub={`sem certeza total · ${stats?.rehired??0} recontratados`} color="#d97706"/></Link>
@@ -81,7 +82,7 @@ const handleClearTerminated = async () => {
             <div key={i} style={{border:`1px solid ${color}`,borderRadius:'var(--radius)',padding:'0.75rem 0.9rem',background:over?'var(--red-bg)':'var(--yellow-bg)'}}>
               <div title={l.name} style={{fontSize:'0.75rem',fontWeight:600,marginBottom:'0.35rem',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{l.name}</div>
               <div style={{fontSize:'0.95rem',fontWeight:700,color:'var(--text)'}}>{l.used} <span style={{fontSize:'0.72rem',fontWeight:500,color:'var(--text3)'}}>/ {l.total}</span></div>
-              <div style={{height:4,background:'var(--border)',borderRadius:2,marginTop:'0.4rem',overflow:'hidden'}}><div style={{height:'100%',width:`${Math.min(100,l.ratio*100)}%`,background:color}}/></div>
+              <div style={{height:4,background:'var(--border)',borderRadius:2,marginTop:'0.4rem',overflow:'hidden'}}><div className="bar-fill" style={{height:'100%',width:`${Math.min(100,l.ratio*100)}%`,background:color}}/></div>
               <div style={{fontSize:'0.64rem',fontWeight:600,color,marginTop:'0.3rem'}}>{over?`${l.used-l.total} acima do limite`:'perto do limite (90%+)'}</div>
             </div>
           );})}
@@ -105,7 +106,7 @@ const handleClearTerminated = async () => {
           {Object.entries(stats?.platform_users||{}).map(([plat,count])=>{
             const max=Math.max(...Object.values(stats?.platform_users||{}),1);
             const pct=Math.round((count/max)*100);const color=PC[plat]||'var(--accent)';
-            return(<div key={plat}><div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:'0.8rem',fontWeight:500}}>{PL[plat]||plat}</span><span style={{fontSize:'0.78rem',fontFamily:'var(--font-mono)',color:'var(--text2)'}}>{count.toLocaleString()}</span></div><div style={{height:5,background:'var(--bg3)',borderRadius:3}}><div style={{height:'100%',width:`${pct}%`,background:color,borderRadius:3,transition:'width 0.5s ease'}}/></div></div>);
+            return(<div key={plat}><div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:'0.8rem',fontWeight:500}}>{PL[plat]||plat}</span><span style={{fontSize:'0.78rem',fontFamily:'var(--font-mono)',color:'var(--text2)'}}><CountUp value={count}/></span></div><div style={{height:5,background:'var(--bg3)',borderRadius:3}}><div className="bar-fill" style={{height:'100%',width:`${pct}%`,background:color,borderRadius:3}}/></div></div>);
           })}
           {!stats&&<div style={{color:'var(--text3)',fontSize:'0.82rem'}}>Importe os CSVs para ver dados.</div>}
         </div>

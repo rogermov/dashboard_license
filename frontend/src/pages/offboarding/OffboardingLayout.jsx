@@ -1,7 +1,7 @@
 import React from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useOffboarding } from '../../hooks/useOffboarding.jsx';
-import { fmtDateTime } from '../../components/ui.jsx';
+import { CountUp, fmtDateTime } from '../../components/ui.jsx';
 
 // As 4 etapas do mês. Também são o menu do Offboarding: clicar leva à etapa.
 function steps(s) {
@@ -29,7 +29,7 @@ export default function OffboardingLayout() {
             <li key={s.to} style={{ display: 'contents' }}>
               <NavLink to={s.to} className={({ isActive }) => 'step' + (isActive ? ' active' : '') + (s.alert ? ' step--alert' : '')}>
                 <div className="step__top"><span className="step__num">{s.num}</span><span className="step__label">{s.label}</span></div>
-                <div className="step__value"><strong>{s.value}</strong><span>{s.hint}</span></div>
+                <div className="step__value"><strong><CountUp value={s.value} /></strong><span>{s.hint}</span></div>
               </NavLink>
             </li>
           ))}

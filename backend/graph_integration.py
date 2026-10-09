@@ -45,7 +45,7 @@ def get_users(token: str) -> list:
     # employeeId = matrícula do SAP (chave do offboarding); proxyAddresses/otherMails =
     # aliases, usados para achar a pessoa nos outros sistemas.
     url = (f"{GRAPH_BASE}/users?$select=id,displayName,mail,userPrincipalName,"
-           f"accountEnabled,assignedLicenses,employeeId,proxyAddresses,otherMails,onPremisesSyncEnabled&$top=999")
+           f"accountEnabled,assignedLicenses,employeeId,proxyAddresses,otherMails,onPremisesSyncEnabled,jobTitle&$top=999")
     all_users = []
     while url:
         resp = requests.get(url, headers=headers, timeout=30)

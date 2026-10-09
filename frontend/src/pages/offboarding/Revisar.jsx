@@ -4,10 +4,11 @@ import { api } from '../../hooks/api.js';
 import { useOffboarding } from '../../hooks/useOffboarding.jsx';
 import { exportCSV } from '../../lib/csv.js';
 import { PLATFORMS, PLATFORM_LABELS as PL } from '../../lib/platforms.js';
-import { Badge, Empty, Notice, PlatformTag, SearchInput, Skeleton, Tabs, cx, fmtDate, fmtDateTime, useDebounced, useToast } from '../../components/ui.jsx';
+import { Badge, Empty, Notice, PlatformTag, SearchInput, Segmented, Skeleton, Tabs, cx, fmtDate, fmtDateTime, useDebounced, useToast } from '../../components/ui.jsx';
 
 const mkey = m => `${m.matricula}|${m.platform}|${m.account_email}`;
 const LEAVE_MS = 260; // casa com --dur-med (animação de saída)
+const CARGO = { confere: ['Cargo confere', 'success'], diferente: ['Cargo diferente', 'priority'] };
 
 export default function Revisar() {
   const { refresh } = useOffboarding();
@@ -20,6 +21,7 @@ export default function Revisar() {
   const [platform, setPlatform] = useState('');
   const [busy, setBusy] = useState(null);
   const [leaving, setLeaving] = useState(() => new Set());
+  const [cargo, setCargo] = useState('all');
   const q = useDebounced(search);
   const [toast, showToast] = useToast();
 
@@ -41,11 +43,33 @@ export default function Revisar() {
   const groups = useMemo(() => {
     const m = new Map();
     for (const it of items) {
+      if (cargo !== 'all' && (it.cargo_check || 'sem') !== cargo) continue;
       if (!m.has(it.matricula)) m.set(it.matricula, { ...it, matches: [] });
       m.get(it.matricula).matches.push(it);
     }
     return [...m.values()];
-  }, [items]);
+  }, [items, cargo]);
+  const cargoCount = v => items.filter(i => (i.cargo_check || 'sem') === v).length;
+  const visible = groups.flatMap(g => g.matches);
+
+  // "Não é a pessoa" para todos os visíveis (ex.: filtro Cargo diferente). Desfaz pela aba Decididos.
+  const rejectAll = async () => {
+    if (!window.confirm(`Marcar ${visible.length} conta(s) como "Não é a pessoa"? Dá para desfazer na aba Decididos.`)) return;
+    const done = [];
+    for (const m of visible) {
+      try {
+        await api.post('/offboarding/decision', { matricula: m.matricula, platform: m.platform, account_email: m.account_email, decision: 'rejeitar' });
+        done.push(m);
+      } catch { /* segue com os demais */ }
+    }
+    showToast(`${done.length} conta(s) marcadas como "Não é a pessoa".`, done.length < visible.length, {
+      label: 'Desfazer', onClick: async () => {
+        for (const m of done) await api.post('/offboarding/decision', { matricula: m.matricula, platform: m.platform, account_email: m.account_email, decision: 'desfazer' }).catch(() => {});
+        load(); refresh();
+      },
+    });
+    load(); refresh();
+  };
 
   const undo = async (d) => {
     try {
@@ -101,6 +125,19 @@ export default function Revisar() {
       ]} />
 
       {error && <Notice tone="danger" action={<button className="btn btn--sm" onClick={load}>Tentar de novo</button>}>{error}</Notice>}
+      {!loading && !error && tab === 'pending' && items.length > 0 && (
+        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+          <Segmented label="Cargo" value={cargo} onChange={setCargo} options={[
+            { value: 'all', label: 'Todos', count: items.length },
+            { value: 'diferente', label: 'Cargo diferente', count: cargoCount('diferente') },
+            { value: 'confere', label: 'Cargo confere', count: cargoCount('confere') },
+            { value: 'sem', label: 'Sem cargo na conta', count: cargoCount('sem') },
+          ]} />
+          {cargo === 'diferente' && visible.length > 0 && (
+            <button type="button" className="btn" onClick={rejectAll}><X size={15} />Não é a pessoa — todos os {visible.length}</button>
+          )}
+        </div>
+      )}
       {loading ? <Skeleton rows={4} height={96} /> : !error && tab === 'pending' && (
         groups.length === 0 ? <div className="card"><Empty title="Nada para revisar">Todos os casos incertos já foram decididos.</Empty></div> : (
           <div className="stack stagger" style={{ gap: 12 }}>
@@ -110,6 +147,7 @@ export default function Revisar() {
                   <div>
                     <div style={{ fontWeight: 600 }}>{g.person_name}</div>
                     <div className="xs muted">{g.company} · saiu {fmtDate(g.termination_date)} · <span className="mono">mat. {g.matricula}</span></div>
+                    {g.person_cargo && <div className="small" style={{ marginTop: 2 }}>Cargo no RH: <strong>{g.person_cargo}</strong></div>}
                   </div>
                   {g.detail && <Badge tone="warning">{g.detail.length > 70 ? g.detail.slice(0, 70) + '…' : g.detail}</Badge>}
                 </div>
@@ -121,8 +159,12 @@ export default function Revisar() {
                         <div style={{ minWidth: 260, flex: '1 1 300px' }}>
                           <div className="row" style={{ gap: 6 }}><PlatformTag platform={m.platform} /><span style={{ fontWeight: 500 }}>{m.account_name || '—'}</span></div>
                           <div className="mono small" style={{ color: 'var(--ink-2)', marginTop: 2 }}>{m.account_email}{m.account_status ? ` · ${m.account_status}` : ''}</div>
+                          <div className="row small" style={{ gap: 6, marginTop: 4 }}>
+                            <span className="muted">Cargo na conta:</span><span>{m.account_title || '—'}</span>
+                            {CARGO[m.cargo_check] && <Badge tone={CARGO[m.cargo_check][1]}>{CARGO[m.cargo_check][0]}</Badge>}
+                          </div>
                         </div>
-                        <div className="small muted" style={{ flex: '2 1 320px' }}>{m.method}</div>
+                        <div className="small muted" style={{ flex: '2 1 320px' }}>{m.method.replace(/ · (⚠ )?cargo (confere|diferente)/, '')}</div>
                         <div className="row">
                           <button type="button" className="btn btn--sm btn--danger" disabled={busy === k} onClick={() => decide(m, 'confirmar')}><Check size={14} />É a pessoa</button>
                           <button type="button" className="btn btn--sm" disabled={busy === k} onClick={() => decide(m, 'rejeitar')}><X size={14} />Não é</button>

@@ -33,6 +33,25 @@ AGIR, REVISAR = "agir", "revisar"
 SHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9_-]+)")
 
 
+# ─── Cargo (RH × conta) ──────────────────────────────────────────────────────
+_CARGO_STOP = {"de", "da", "do", "das", "dos", "e", "em", "i", "ii", "iii", "iv", "jr", "pl", "sr", "nivel", "lider"}
+
+def _cargo_tokens(s):
+    return [t for t in re.sub(r"[^a-z0-9 ]", " ", fold(s)).split() if len(t) >= 3 and t not in _CARGO_STOP]
+
+def cargo_check(rh, conta):
+    """'confere' | 'diferente' | '' (sem dado). Tolerante a abreviação:
+    SUP OPERACIONAL ~ Supervisor Operacional, AUX ~ Auxiliar."""
+    a, b = _cargo_tokens(rh), _cargo_tokens(conta)
+    if not a or not b:
+        return ""
+    for x in a:
+        for y in b:
+            if x == y or (len(x) >= 3 and len(y) >= 3 and (x.startswith(y) or y.startswith(x))):
+                return "confere"
+    return "diferente"
+
+
 # ─── Empresa → domínios ──────────────────────────────────────────────────────
 
 def load_domain_map(path):
@@ -310,8 +329,9 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
         notes = [t["rehire_detail"]] if cap else []
         rows = {}
 
-        def add(platform, email, name, status, conf, method, by_name=False):
+        def add(platform, email, name, status, conf, method, by_name=False, title=""):
             email = (email or "").lower()
+            cc = cargo_check(t.get("cargo"), title)
             dec = decisions.get((mat, platform, email))
             if dec == "rejeitar":
                 return
@@ -327,6 +347,10 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
                     return
                 if txt:
                     method = f"{method} · {txt}"
+                if cc == "confere":
+                    method = f"{method} · cargo confere"
+                elif cc == "diferente":
+                    method = f"{method} · ⚠ cargo diferente"
             if dec == "confirmar":
                 conf, method = AGIR, method + " · confirmado manualmente"
             elif cap and conf == AGIR:
@@ -337,7 +361,7 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
             rows[key] = {"matricula": mat, "person_name": t["name"], "company": t.get("company", ""),
                          "termination_date": t.get("termination_date", ""), "platform": platform,
                          "account_email": email, "account_name": name or "", "account_status": status,
-                         "confidence": conf, "method": method}
+                         "confidence": conf, "method": method, "account_title": title or "", "cargo_check": cc}
 
         # 1) Quem é a pessoa no M365 (é o diretório que tem a matrícula)
         ident, conf, method, ident_by_name = [], None, None, False
@@ -372,7 +396,7 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
 
         for u in ident:
             if u["enabled"]:
-                add("365", u["email"] or u["upn"], u["name"], "ativa", conf, method, by_name=ident_by_name)
+                add("365", u["email"] or u["upn"], u["name"], "ativa", conf, method, by_name=ident_by_name, title=u.get("job_title", ""))
 
         # 2) E-mails da pessoa → encontrá-la nos outros sistemas (cada um usa um domínio)
         addrs = {}
@@ -384,12 +408,12 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
             addrs[email_rh] = (AGIR, "E-mail informado pelo RH", False)
             if email_rh in m_by_mail and m_by_mail[email_rh]["enabled"]:
                 u = m_by_mail[email_rh]
-                add("365", u["email"] or u["upn"], u["name"], "ativa", AGIR, "E-mail informado pelo RH")
+                add("365", u["email"] or u["upn"], u["name"], "ativa", AGIR, "E-mail informado pelo RH", title=u.get("job_title", ""))
 
         def propagate(platform, by_mail, by_first, label, found=False):
             for a, (c, m, bn) in addrs.items():
                 for acc in by_mail.get(a, []):
-                    add(platform, acc["email"], acc.get("label") or acc["name"], acc.get("status", "ativa"), c, m, by_name=bn)
+                    add(platform, acc["email"], acc.get("label") or acc["name"], acc.get("status", "ativa"), c, m, by_name=bn, title=acc.get("job_title", ""))
                     found = True
             if found or not by_first:
                 return
@@ -400,20 +424,20 @@ def build_matches(terminations, m365, google, docusign, others, decisions, domai
             if exatos:
                 tag = "" if len(exatos) == 1 else f" ({len(exatos)} contas, ambíguo)"
                 for a in exatos:
-                    add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR, f"Nome igual no {label}{tag}", by_name=True)
+                    add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR, f"Nome igual no {label}{tag}", by_name=True, title=a.get("job_title", ""))
             elif len(compat) == 1:
                 a = compat[0]
                 add(platform, a["email"], a.get("label") or a["name"], a.get("status", "ativa"), REVISAR,
-                    f"Nome compatível no {label} (todos os termos constam no nome do RH)", by_name=True)
+                    f"Nome compatível no {label} (todos os termos constam no nome do RH)", by_name=True, title=a.get("job_title", ""))
 
         g_emp = g_by_emp.get(strip_mat(mat), [])
         for acc in g_emp:
-            add("google", acc["email"], acc["name"], acc.get("status", "ativa"), AGIR, "Matrícula = Employee ID no Google")
+            add("google", acc["email"], acc["name"], acc.get("status", "ativa"), AGIR, "Matrícula = Employee ID no Google", title=acc.get("job_title", ""))
         propagate("google", g_mail, g_first, "Google", found=bool(g_emp))
         propagate("docusign", d_mail, d_first, "DocuSign")
         for a, (c, m, bn) in addrs.items():
             for o in o_mail.get(a, []):
-                add(o["platform"], o["email"], o["name"], "ativa", c, m, by_name=bn)
+                add(o["platform"], o["email"], o["name"], "ativa", c, m, by_name=bn, title=o.get("job_title", ""))
 
         detail = " | ".join(n for n in notes if n)
         for r in rows.values():

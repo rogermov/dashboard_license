@@ -185,3 +185,17 @@ def test_google_por_employee_id_e_certeza():
 def test_nome_igual_com_login_de_outra_matricula_avisa():
     matches, _ = run([term("10067704", "AMILTON SANTOS")], m=[m365("10067707@x.onmicrosoft.com", "Amilton Santos")])
     assert matches[0]["confidence"] == "revisar" and "outra matrícula (10067707)" in matches[0]["method"]
+
+
+def test_cargo_check_tolera_abreviacao():
+    assert ob.cargo_check("SUP OPERACIONAL", "Supervisor Operacional") == "confere"
+    assert ob.cargo_check("AUX ADMINISTRATIVO", "Auxiliar Administrativo II") == "confere"
+    assert ob.cargo_check("APRENDIZ", "Analista de RH") == "diferente"
+    assert ob.cargo_check("MOTORISTA", "") == ""
+
+
+def test_candidato_por_nome_marca_cargo_diferente():
+    t = term("9", "MARIA SOUZA"); t["cargo"] = "APRENDIZ"
+    g = gacc("maria.souza@x.com", "Maria Souza"); g["job_title"] = "Gerente Financeira"
+    matches, _ = run([t], google=[g])
+    assert matches[0]["cargo_check"] == "diferente" and "cargo diferente" in matches[0]["method"]

@@ -18,9 +18,31 @@
  *     Project Settings → Script Properties → adicione ACCESSGUARD_TOKEN = <valor longo aleatório>
  *     e coloque o mesmo valor em GOOGLE_APPS_SCRIPT_TOKEN no .env do servidor.
  *     Sem essa propriedade o doPost recusa tudo.
+ *  5) PERMISSÃO PARA SUSPENDER (erro "You do not have permission to call directory.users.update"):
+ *     o script foi autorizado quando só LIA usuários. Selecione a função autorizar() no topo do
+ *     editor e clique em Executar ▶; aceite a tela do Google (ela pede "ver e gerenciar usuários").
+ *     A conta precisa ser Super Admin ou ter o papel de admin "Gerenciamento de usuários".
  *  Depois de colar uma versão nova: Deploy → Manage deployments → editar → Version: New version
  *  (assim a URL /exec continua a mesma).
  */
+
+// Execute UMA vez pelo editor (▶ Executar) para conceder a permissão de alterar usuários.
+// Não altera nada: só lê o próprio usuário. O Google pede todas as permissões que o
+// script usa (inclusive a de suspender, usada no doPost).
+function autorizar() {
+  var me = Session.getEffectiveUser().getEmail();
+  var u = AdminDirectory.Users.get(me);
+  Logger.log('Autorizado como ' + u.primaryEmail + '. Admin: ' + u.isAdmin + ' / admin delegado: ' + u.isDelegatedAdmin);
+  if (false) AdminDirectory.Users.update({}, me); // nunca roda: só declara o uso do escopo de escrita
+}
+
+// Cargo do Admin Console (organizations[].title; o primário, se houver).
+function jobTitle_(u) {
+  var orgs = u.organizations || [];
+  for (var i = 0; i < orgs.length; i++) if (orgs[i].primary && orgs[i].title) return String(orgs[i].title);
+  for (var j = 0; j < orgs.length; j++) if (orgs[j].title) return String(orgs[j].title);
+  return '';
+}
 
 // Employee ID do Admin Console (externalIds tipo "organization") = matrícula do SAP.
 function employeeId_(u) {
@@ -72,7 +94,8 @@ function doGet() {
           status: u.suspended ? 'suspended' : 'active',
           org_unit: u.orgUnitPath || '',
           last_login: u.lastLoginTime || '',
-          employee_id: employeeId_(u)
+          employee_id: employeeId_(u),
+          job_title: jobTitle_(u)
         });
       });
       pageToken = resp.nextPageToken;

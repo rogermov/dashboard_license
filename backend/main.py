@@ -146,6 +146,9 @@ def init_db():
                     "ALTER TABLE ms365_users ADD COLUMN aliases TEXT",
                     "ALTER TABLE ms365_users ADD COLUMN on_prem INTEGER DEFAULT 0",   # sincronizada do AD local
                     "ALTER TABLE offboarding_decisions ADD COLUMN decided_by TEXT",
+                    "ALTER TABLE ms365_users ADD COLUMN job_title TEXT",          # cargo (Entra)
+                    "ALTER TABLE offboarding_matches ADD COLUMN account_title TEXT",
+                    "ALTER TABLE offboarding_matches ADD COLUMN cargo_check TEXT",
                     "CREATE INDEX IF NOT EXISTS idx_ms365_employee ON ms365_users(employee_id)"]:
         try: c.execute(col_sql)
         except: pass
@@ -745,10 +748,11 @@ def google_sync():
 
         users = data.get("users", [])
         conn.execute('''CREATE TABLE IF NOT EXISTS google_users (email TEXT PRIMARY KEY, name TEXT, status TEXT, org_unit TEXT, last_login TEXT, imported_at DATETIME DEFAULT (datetime('now', 'localtime')))''')
-        try:   # tabelas antigas não têm a coluna
-            conn.execute("ALTER TABLE google_users ADD COLUMN employee_id TEXT")
-        except sqlite3.OperationalError:
-            pass
+        for col in ("employee_id", "job_title"):   # tabelas antigas não têm as colunas
+            try:
+                conn.execute(f"ALTER TABLE google_users ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("DELETE FROM google_users")
         conn.execute("DELETE FROM platform_users WHERE platform='google'")
 
@@ -758,10 +762,11 @@ def google_sync():
             if not email: continue  # evita IntegrityError (email é PK) e lixo
             name, status = u.get("name"), str(u.get("status")).lower()
             # ON CONFLICT: se o Apps Script devolver o mesmo e-mail 2x, atualiza em vez de quebrar.
-            conn.execute("""INSERT INTO google_users (email, name, status, org_unit, last_login, employee_id) VALUES (?, ?, ?, ?, ?, ?)
+            conn.execute("""INSERT INTO google_users (email, name, status, org_unit, last_login, employee_id, job_title) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET name=excluded.name, status=excluded.status, org_unit=excluded.org_unit,
-                last_login=excluded.last_login, employee_id=excluded.employee_id""",
-                (email, name, status, u.get("org_unit"), u.get("last_login", ""), (u.get("employee_id") or "").strip()))
+                last_login=excluded.last_login, employee_id=excluded.employee_id, job_title=excluded.job_title""",
+                (email, name, status, u.get("org_unit"), u.get("last_login", ""), (u.get("employee_id") or "").strip(),
+                 (u.get("job_title") or "").strip()))
             if status == "active":
                 conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email, "google", name)); count += 1
 
@@ -865,12 +870,13 @@ def microsoft365_sync():
             emp_id = (u.get("employeeId") or "").strip()
             aliases = sorted({p.split(":", 1)[1].lower() for p in (u.get("proxyAddresses") or []) if p.lower().startswith("smtp:")}
                              | {m.lower() for m in (u.get("otherMails") or []) if m})
-            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases, on_prem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases, on_prem, job_title)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
                 licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases,
-                on_prem=excluded.on_prem, imported_at=CURRENT_TIMESTAMP""",
+                on_prem=excluded.on_prem, job_title=excluded.job_title, imported_at=CURRENT_TIMESTAMP""",
                 (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases),
-                 1 if u.get("onPremisesSyncEnabled") else 0))
+                 1 if u.get("onPremisesSyncEnabled") else 0, (u.get("jobTitle") or "").strip()))
 
             if enabled and has_paid_license(part_numbers):
                 conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
@@ -1149,20 +1155,26 @@ def rebuild_offboarding():
     try:
         terms = [dict(r) for r in conn.execute("SELECT * FROM hr_terminations").fetchall()]
         m365 = [{"email": r["email"], "upn": r["upn"], "name": r["name"], "enabled": bool(r["account_enabled"]),
-                 "employee_id": r["employee_id"] or "", "aliases": [a for a in (r["aliases"] or "").split(";") if a]}
-                for r in conn.execute("SELECT email, upn, name, account_enabled, employee_id, aliases FROM ms365_users")]
+                 "employee_id": r["employee_id"] or "", "aliases": [a for a in (r["aliases"] or "").split(";") if a],
+                 "job_title": r["job_title"] or ""}
+                for r in conn.execute("SELECT email, upn, name, account_enabled, employee_id, aliases, job_title FROM ms365_users")]
         try:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(google_users)")}
-            emp = "employee_id" if "employee_id" in cols else "'' AS employee_id"
+            opt = ", ".join(c if c in cols else f"'' AS {c}" for c in ("employee_id", "job_title"))
             google = [{"email": r["email"], "name": r["name"], "active": (r["status"] or "") == "active", "status": "ativa",
-                       "employee_id": r["employee_id"] or ""}
-                      for r in conn.execute(f"SELECT email, name, status, {emp} FROM google_users")]
+                       "employee_id": r["employee_id"] or "", "job_title": r["job_title"] or ""}
+                      for r in conn.execute(f"SELECT email, name, status, {opt} FROM google_users")]
         except sqlite3.OperationalError:     # a tabela só existe depois do 1º sync do Google
             google = []
+        def _ds_title(raw):
+            try:
+                return (json.loads(raw or "{}").get("jobTitle") or "").strip()
+            except ValueError:
+                return ""
         docusign = [{"email": r["email"], "name": r["name"], "active": r["status"] in ("active", "pending"),
                      "status": "ativa" if r["status"] == "active" else "pendente",
-                     "label": f'{r["name"] or r["email"]} · {r["account_name"]}'}
-                    for r in conn.execute("SELECT email, name, status, account_name FROM docusign_users")]
+                     "label": f'{r["name"] or r["email"]} · {r["account_name"]}', "job_title": _ds_title(r["raw_json"])}
+                    for r in conn.execute("SELECT email, name, status, account_name, raw_json FROM docusign_users")]
         others = [{"email": r["email"], "name": r["display_name"] or "", "platform": r["platform"]}
                   for r in conn.execute("SELECT email, platform, display_name FROM platform_users "
                                         "WHERE platform NOT IN ('365','google','docusign')")]
@@ -1173,9 +1185,11 @@ def rebuild_offboarding():
         matches, people = offboarding.build_matches(terms, m365, google, docusign, others, decisions, dmap)
         conn.execute("DELETE FROM offboarding_matches")
         conn.executemany("""INSERT INTO offboarding_matches (matricula, person_name, company, termination_date, platform,
-            account_email, account_name, account_status, confidence, method, detail) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            account_email, account_name, account_status, confidence, method, detail, account_title, cargo_check)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(m["matricula"], m["person_name"], m["company"], m["termination_date"], m["platform"], m["account_email"],
-              m["account_name"], m["account_status"], m["confidence"], m["method"], m["detail"]) for m in matches])
+              m["account_name"], m["account_status"], m["confidence"], m["method"], m["detail"],
+              m.get("account_title", ""), m.get("cargo_check", "")) for m in matches])
         conn.executemany("UPDATE hr_terminations SET match_status=?, match_detail=? WHERE matricula=?",
                          [(st, det, mat) for mat, (st, det) in people.items()])
         conn.commit()
@@ -1250,15 +1264,16 @@ def offboarding_review(search: str = "", platform: str = ""):
     """Fila de revisão: correspondências sem certeza total."""
     conn = get_db()
     try:
-        q = "SELECT * FROM offboarding_matches WHERE confidence='revisar'"
+        q = ("SELECT m.*, h.cargo AS person_cargo FROM offboarding_matches m "
+             "LEFT JOIN hr_terminations h ON h.matricula = m.matricula WHERE m.confidence='revisar'")
         params = []
         if platform:
-            q += " AND platform=?"
+            q += " AND m.platform=?"
             params.append(platform)
         if search:
-            q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
+            q += " AND (LOWER(m.person_name) LIKE ? OR LOWER(m.account_email) LIKE ? OR m.matricula LIKE ?)"
             params += [f"%{search.lower()}%"] * 3
-        return [dict(r) for r in conn.execute(q + " ORDER BY person_name, platform", params).fetchall()]
+        return [dict(r) for r in conn.execute(q + " ORDER BY m.person_name, m.platform", params).fetchall()]
     finally:
         conn.close()
 

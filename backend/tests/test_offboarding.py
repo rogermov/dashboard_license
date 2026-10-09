@@ -174,3 +174,9 @@ def test_empresa_fora_da_gestao_e_ignorada():
     matches, people = run([t], m=[m365("ana@x.com", "Ana Lima", emp="1")],
                           dmap={**DMAP, "fora_da_gestao": ["sao geraldo"]})
     assert matches == [] and people["1"][0] == "fora_da_gestao"
+
+
+def test_google_por_employee_id_e_certeza():
+    g = gacc("ana.l@empresa.com.br", "A. Lima"); g["employee_id"] = "0042"
+    matches, people = run([term("42", "ANA LIMA")], google=[g])
+    assert people["42"][0] == "agir" and matches[0]["method"].startswith("Matrícula = Employee ID")

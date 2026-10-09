@@ -119,6 +119,12 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, matricula TEXT, person_name TEXT, company TEXT,
         termination_date TEXT, platform TEXT, account_email TEXT, account_name TEXT,
         account_status TEXT, confidence TEXT, method TEXT, detail TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY, value TEXT, updated_by TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS offboarding_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, matricula TEXT, person_name TEXT, platform TEXT,
+        account_email TEXT, action TEXT, status TEXT, detail TEXT, extra TEXT, actor TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     c.execute("""CREATE TABLE IF NOT EXISTS offboarding_decisions (
         matricula TEXT NOT NULL, platform TEXT NOT NULL, account_email TEXT NOT NULL,
         decision TEXT NOT NULL, decided_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -138,6 +144,7 @@ def init_db():
     for col_sql in ["ALTER TABLE platform_users ADD COLUMN display_name TEXT",
                     "ALTER TABLE ms365_users ADD COLUMN employee_id TEXT",   # matrícula SAP
                     "ALTER TABLE ms365_users ADD COLUMN aliases TEXT",
+                    "ALTER TABLE ms365_users ADD COLUMN on_prem INTEGER DEFAULT 0",   # sincronizada do AD local
                     "CREATE INDEX IF NOT EXISTS idx_ms365_employee ON ms365_users(employee_id)"]:
         try: c.execute(col_sql)
         except: pass
@@ -238,6 +245,8 @@ def get_risk_users(search: str="", platform: str=""):
             q += " AND (LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?)"
             params += [f"%{search.lower()}%"] * 3
         rows = conn.execute(q + " ORDER BY termination_date DESC, person_name", params).fetchall()
+        guests = {r[0] for r in conn.execute("SELECT LOWER(email) FROM ms365_users WHERE upn LIKE '%#EXT#%'")}
+        ad_local = {r[0] for r in conn.execute("SELECT LOWER(email) FROM ms365_users WHERE on_prem=1")}
     finally:
         conn.close()
     people = {}
@@ -251,7 +260,9 @@ def get_risk_users(search: str="", platform: str=""):
         if r["platform"] not in p["active_platforms"]:
             p["active_platforms"].append(r["platform"])
         p["accounts"].append({"platform": r["platform"], "email": r["account_email"],
-                              "name": r["account_name"], "method": r["method"]})
+                              "name": r["account_name"], "method": r["method"],
+                              "guest": r["platform"] == "365" and r["account_email"] in guests,
+                              "ad_local": r["platform"] == "365" and r["account_email"] in ad_local})
     result = [p for p in people.values() if not platform or platform in p["active_platforms"]]
     for p in result:
         n = len(p["active_platforms"])
@@ -269,7 +280,15 @@ def get_all_terminated(search: str=""):
         if search:
             q += " WHERE LOWER(name) LIKE ? OR matricula LIKE ? OR LOWER(email_rh) LIKE ?"
             params = [f"%{search.lower()}%"] * 3
-        return [dict(r) for r in conn.execute(q + " ORDER BY termination_date DESC, name", params).fetchall()]
+        rows = [dict(r) for r in conn.execute(q + " ORDER BY termination_date DESC, name", params).fetchall()]
+        done = {}
+        for a in conn.execute("SELECT matricula, platform, account_email, created_at FROM offboarding_actions a "
+                              f"WHERE action='desativar' AND status IN ('ok','manual') AND NOT EXISTS ({_UNDONE_SQL}) "
+                              "ORDER BY id"):
+            done.setdefault(a["matricula"], []).append(f'{a["platform"]}: {a["account_email"]} ({a["created_at"][:10]})')
+        for r in rows:
+            r["deactivated"] = done.get(r["matricula"], [])
+        return rows
     finally:
         conn.close()
 
@@ -725,6 +744,10 @@ def google_sync():
 
         users = data.get("users", [])
         conn.execute('''CREATE TABLE IF NOT EXISTS google_users (email TEXT PRIMARY KEY, name TEXT, status TEXT, org_unit TEXT, last_login TEXT, imported_at DATETIME DEFAULT (datetime('now', 'localtime')))''')
+        try:   # tabelas antigas não têm a coluna
+            conn.execute("ALTER TABLE google_users ADD COLUMN employee_id TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("DELETE FROM google_users")
         conn.execute("DELETE FROM platform_users WHERE platform='google'")
 
@@ -734,9 +757,10 @@ def google_sync():
             if not email: continue  # evita IntegrityError (email é PK) e lixo
             name, status = u.get("name"), str(u.get("status")).lower()
             # ON CONFLICT: se o Apps Script devolver o mesmo e-mail 2x, atualiza em vez de quebrar.
-            conn.execute("""INSERT INTO google_users (email, name, status, org_unit, last_login) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(email) DO UPDATE SET name=excluded.name, status=excluded.status, org_unit=excluded.org_unit, last_login=excluded.last_login""",
-                (email, name, status, u.get("org_unit"), u.get("last_login", "")))
+            conn.execute("""INSERT INTO google_users (email, name, status, org_unit, last_login, employee_id) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(email) DO UPDATE SET name=excluded.name, status=excluded.status, org_unit=excluded.org_unit,
+                last_login=excluded.last_login, employee_id=excluded.employee_id""",
+                (email, name, status, u.get("org_unit"), u.get("last_login", ""), (u.get("employee_id") or "").strip()))
             if status == "active":
                 conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email, "google", name)); count += 1
 
@@ -840,10 +864,12 @@ def microsoft365_sync():
             emp_id = (u.get("employeeId") or "").strip()
             aliases = sorted({p.split(":", 1)[1].lower() for p in (u.get("proxyAddresses") or []) if p.lower().startswith("smtp:")}
                              | {m.lower() for m in (u.get("otherMails") or []) if m})
-            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases) VALUES (?, ?, ?, ?, ?, ?, ?)
+            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases, on_prem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
-                licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases, imported_at=CURRENT_TIMESTAMP""",
-                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases)))
+                licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases,
+                on_prem=excluded.on_prem, imported_at=CURRENT_TIMESTAMP""",
+                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases),
+                 1 if u.get("onPremisesSyncEnabled") else 0))
 
             if enabled and has_paid_license(part_numbers):
                 conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
@@ -861,9 +887,11 @@ def microsoft365_sync():
 
         conn.execute("""INSERT INTO ms365_sync_log (id, synced_at, error) VALUES (1, CURRENT_TIMESTAMP, NULL)
             ON CONFLICT(id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL""")
+        revertidas = _reconcile_m365_actions(conn)
         conn.commit()
         _safe_rebuild_offboarding()
-        return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga."}
+        aviso = f" ⚠ {revertidas} conta(s) desativada(s) pelo painel voltaram a ficar ativas (ver Histórico)." if revertidas else ""
+        return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga.{aviso}"}
     except Exception as e:
         print(f"Erro no microsoft365_sync: {e}")
         conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
@@ -1113,8 +1141,11 @@ def rebuild_offboarding():
                  "employee_id": r["employee_id"] or "", "aliases": [a for a in (r["aliases"] or "").split(";") if a]}
                 for r in conn.execute("SELECT email, upn, name, account_enabled, employee_id, aliases FROM ms365_users")]
         try:
-            google = [{"email": r["email"], "name": r["name"], "active": (r["status"] or "") == "active", "status": "ativa"}
-                      for r in conn.execute("SELECT email, name, status FROM google_users")]
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(google_users)")}
+            emp = "employee_id" if "employee_id" in cols else "'' AS employee_id"
+            google = [{"email": r["email"], "name": r["name"], "active": (r["status"] or "") == "active", "status": "ativa",
+                       "employee_id": r["employee_id"] or ""}
+                      for r in conn.execute(f"SELECT email, name, status, {emp} FROM google_users")]
         except sqlite3.OperationalError:     # a tabela só existe depois do 1º sync do Google
             google = []
         docusign = [{"email": r["email"], "name": r["name"], "active": r["status"] in ("active", "pending"),
@@ -1285,3 +1316,355 @@ def offboarding_m365_licensed(search: str = ""):
         result.append({**dict(r), "licenses": paid, "office": office})
     result.sort(key=lambda x: (not x["office"], x["confidence"] != "agir", x["person_name"] or ""))
     return result
+
+# ─── OFFBOARDING: AÇÕES (desativar / reativar via API) ───────────────────────
+# Regras de segurança:
+# - Só age em contas que estão em "Remover" (confidence='agir') NO MOMENTO da execução.
+# - Só desativa/suspende (reversível). Nunca exclui conta.
+# - OFFBOARDING_ACTIONS_ENABLED != "true" → tudo roda como simulação.
+# - Toda tentativa (simulada, ok ou erro) vai para offboarding_actions, com quem pediu.
+
+import graph_integration as graph_api
+import docusign_integration as ds_api
+from fastapi import Request
+
+API_PLATFORMS = ("365", "google", "docusign")
+MAX_BATCH = 25
+
+def _actions_allowed() -> bool:
+    """Trava do servidor (.env). Se false, nem o botão da tela consegue ligar o modo real."""
+    return os.getenv("OFFBOARDING_ACTIONS_ENABLED", "false").strip().lower() == "true"
+
+def _actions_enabled() -> bool:
+    if not _actions_allowed():
+        return False
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT value FROM app_settings WHERE key='offboarding_live'").fetchone()
+    finally:
+        conn.close()
+    return bool(r) and r["value"] == "true"
+
+def _m365_key(conn, email):
+    """Graph endereça por id/UPN. Convidados (#EXT#) não são achados pelo e-mail."""
+    r = conn.execute("SELECT upn FROM ms365_users WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email)).fetchone()
+    return (r["upn"] if r and r["upn"] else email)
+
+def _protected_emails() -> set:
+    return {e.strip().lower() for e in os.getenv("OFFBOARDING_PROTECTED_EMAILS", "").split(",") if e.strip()}
+
+def _actor(request: Request) -> str:
+    # nginx repassa o usuário do Basic Auth (frontend/nginx.conf)
+    return request.headers.get("x-remote-user") or "desconhecido"
+
+def _log_action(conn, m, action, status, detail, actor, extra=None):
+    conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
+        status, detail, extra, actor) VALUES (?,?,?,?,?,?,?,?,?)""",
+        (m["matricula"], m["person_name"], m["platform"], m["account_email"], action, status, detail,
+         json.dumps(extra) if extra else None, actor))
+
+def _google_post(action, email):
+    url, token = os.getenv("GOOGLE_APPS_SCRIPT_URL"), os.getenv("GOOGLE_APPS_SCRIPT_TOKEN")
+    if not url or not token:
+        raise Exception("GOOGLE_APPS_SCRIPT_TOKEN não configurado (veja google_apps_script.gs, passo 4).")
+    resp = requests.post(url, json={"token": token, "action": action, "email": email}, timeout=60)
+    try:
+        data = resp.json()
+    except ValueError:
+        raise Exception(f"Apps Script respondeu algo inesperado ({resp.status_code}). Publicou a versão nova?")
+    if not data.get("success"):
+        raise Exception(f"Google: {data.get('error')}")
+
+def _docusign_targets(conn, email):
+    """Todas as contas DocuSign ativas com esse e-mail (a pessoa pode estar em mais de uma)."""
+    out = []
+    for r in conn.execute("SELECT id, account_id, account_name, user_id_ds, raw_json FROM docusign_users "
+                          "WHERE LOWER(email)=? AND status IN ('active','pending')", (email,)):
+        uid = r["user_id_ds"]
+        if not uid:
+            try:
+                uid = json.loads(r["raw_json"] or "{}").get("userId")
+            except ValueError:
+                uid = None
+        out.append((r["id"], r["account_id"], r["account_name"], uid))
+    return out
+
+def _deactivate(conn, m, remove_licenses):
+    """Executa de verdade. Devolve (detalhe, extra) ou levanta exceção."""
+    email = m["account_email"]
+    if m["platform"] == "365":
+        cfg = get_graph_config()
+        onp = conn.execute("SELECT on_prem FROM ms365_users WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email)).fetchone()
+        if onp and onp["on_prem"]:
+            raise Exception("Conta sincronizada do AD local: desative no Active Directory (o Entra replica).")
+        token = get_graph_token(cfg["tenant_id"], cfg["client_id"], cfg["client_secret"])
+        key = _m365_key(conn, email)
+        graph_api.set_account_enabled(token, key, False)
+        graph_api.revoke_sessions(token, key)
+        skus = graph_api.remove_all_licenses(token, key) if remove_licenses else []
+        conn.execute("UPDATE ms365_users SET account_enabled=0 WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email))
+        det = "Entrada bloqueada e sessões revogadas" + (f"; {len(skus)} licença(s) removida(s)" if skus else "")
+        if "#ext#" in key.lower():
+            det += " (conta convidada: só perde o acesso à holding)"
+        return det, {"licenses_removed": skus}
+    if m["platform"] == "google":
+        _google_post("suspend", email)
+        conn.execute("UPDATE google_users SET status='suspended' WHERE LOWER(email)=?", (email,))
+        conn.execute("DELETE FROM platform_users WHERE platform='google' AND LOWER(email)=?", (email,))
+        return "Conta suspensa no Google Workspace", None
+    if m["platform"] == "docusign":
+        targets = _docusign_targets(conn, email)
+        if not targets:
+            raise Exception("Nenhuma conta DocuSign ativa com esse e-mail (já foi fechada?)")
+        cfg = ds_api.get_config()
+        token = get_jwt_token(cfg["integration_key"], cfg["user_id"], cfg["rsa_key_path"])
+        accounts = {a["id"]: a for a in cfg["accounts"]}
+        closed = []
+        for row_id, acc_id, acc_name, uid in targets:
+            if not uid or acc_id not in accounts:
+                raise Exception(f"Sem userId/conta configurada para {acc_name}; rode o sync do DocuSign")
+            ds_api.close_user(accounts[acc_id], token, uid)
+            conn.execute("UPDATE docusign_users SET status='closed' WHERE id=?", (row_id,))
+            closed.append(acc_name)
+        conn.execute("DELETE FROM platform_users WHERE platform='docusign' AND LOWER(email)=?", (email,))
+        return f"Acesso fechado no DocuSign: {', '.join(closed)}", {"accounts": closed}
+    # Plataformas sem API (Lucid, Jira, Bitbucket): registra que foi feito à mão.
+    conn.execute("DELETE FROM platform_users WHERE platform=? AND LOWER(email)=?", (m["platform"], email))
+    return "Marcado como desativado manualmente", None
+
+class DeactivateItem(BaseModel):
+    matricula: str
+    platform: str
+    account_email: str
+
+class DeactivateRequest(BaseModel):
+    items: list[DeactivateItem]
+    remove_licenses: bool = False
+    dry_run: bool = False
+
+@app.get("/offboarding/actions/config")
+def offboarding_actions_config():
+    return {"enabled": _actions_enabled(), "allowed": _actions_allowed(), "max_batch": MAX_BATCH,
+            "google_ready": bool(os.getenv("GOOGLE_APPS_SCRIPT_TOKEN")),
+            "protected": len(_protected_emails())}
+
+class ModeRequest(BaseModel):
+    enabled: bool
+
+@app.post("/offboarding/actions/mode")
+def offboarding_actions_mode(req: ModeRequest, request: Request):
+    """Liga/desliga o modo real pela tela. Fica registrado no histórico."""
+    if req.enabled and not _actions_allowed():
+        raise HTTPException(status_code=400, detail="O servidor não permite ações reais (OFFBOARDING_ACTIONS_ENABLED=false no .env).")
+    actor = _actor(request)
+    conn = get_db()
+    try:
+        conn.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('offboarding_live', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP""",
+            ("true" if req.enabled else "false", actor))
+        conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action, status, detail, actor)
+            VALUES ('', '', '-', '', 'modo', 'ok', ?, ?)""",
+            ("Modo real LIGADO" if req.enabled else "Modo real desligado (simulação)", actor))
+        conn.commit()
+    finally:
+        conn.close()
+    return offboarding_actions_config()
+
+@app.post("/offboarding/deactivate")
+def offboarding_deactivate(req: DeactivateRequest, request: Request):
+    if not req.items:
+        raise HTTPException(status_code=400, detail="Nenhuma conta selecionada.")
+    if len(req.items) > MAX_BATCH:
+        raise HTTPException(status_code=400, detail=f"Máximo de {MAX_BATCH} contas por vez.")
+    simulate = req.dry_run or not _actions_enabled()
+    actor, protected = _actor(request), _protected_emails()
+    results = []
+    conn = get_db()
+    try:
+        for it in req.items:
+            email = it.account_email.lower()
+            row = conn.execute("SELECT * FROM offboarding_matches WHERE matricula=? AND platform=? AND account_email=? "
+                               "AND confidence='agir'", (it.matricula, it.platform, email)).fetchone()
+            base = {"matricula": it.matricula, "platform": it.platform, "account_email": email}
+            if not row:
+                results.append({**base, "status": "erro", "detail": "Não está em 'Remover' (confirme na revisão ou recarregue)"})
+                continue
+            m = dict(row)
+            if email in protected:
+                _log_action(conn, m, "desativar", "bloqueado", "Conta protegida (OFFBOARDING_PROTECTED_EMAILS)", actor)
+                results.append({**base, "status": "bloqueado", "detail": "Conta protegida"})
+                continue
+            if simulate:
+                det = "Simulação: nada foi alterado" + ("" if _actions_enabled() else " (ações desligadas no servidor)")
+                _log_action(conn, m, "desativar", "simulado", det, actor)
+                results.append({**base, "status": "simulado", "detail": det})
+                continue
+            try:
+                det, extra = _deactivate(conn, m, req.remove_licenses and m["platform"] == "365")
+                status = "ok" if m["platform"] in API_PLATFORMS else "manual"
+                _log_action(conn, m, "desativar", status, det, actor, extra)
+                results.append({**base, "status": status, "detail": det})
+            except Exception as e:
+                _log_action(conn, m, "desativar", "erro", str(e)[:500], actor)
+                results.append({**base, "status": "erro", "detail": str(e)[:300]})
+            conn.commit()      # cada conta é gravada na hora: uma falha no meio não perde o histórico
+        conn.commit()
+    finally:
+        conn.close()
+    if not simulate:
+        _safe_rebuild_offboarding()
+    return {"simulated": simulate, "results": results,
+            "ok": sum(r["status"] in ("ok", "manual") for r in results),
+            "errors": sum(r["status"] == "erro" for r in results)}
+
+@app.get("/offboarding/actions")
+def offboarding_actions(search: str = "", limit: int = 500):
+    conn = get_db()
+    try:
+        q, params = "SELECT * FROM offboarding_actions", []
+        if search:
+            q += " WHERE LOWER(person_name) LIKE ? OR LOWER(account_email) LIKE ? OR matricula LIKE ?"
+            params = [f"%{search.lower()}%"] * 3
+        rows = [dict(r) for r in conn.execute(q + " ORDER BY id DESC LIMIT ?", (*params, min(limit, 2000)))]
+        undone = {r[0] for r in conn.execute("SELECT CAST(extra AS INTEGER) FROM offboarding_actions "
+                                            "WHERE (action='reativar' AND status='ok') OR action='revertido'")}
+    finally:
+        conn.close()
+    for r in rows:
+        r["can_reactivate"] = (r["action"] == "desativar" and r["status"] == "ok"
+                               and r["platform"] in ("365", "google") and r["id"] not in undone)
+    return rows
+
+class ReactivateRequest(BaseModel):
+    action_id: int
+
+@app.post("/offboarding/reactivate")
+def offboarding_reactivate(req: ReactivateRequest, request: Request):
+    """Desfaz uma desativação (365: desbloqueia e devolve licenças; Google: tira a suspensão).
+    Grava 'Não é a pessoa' para o match, senão ele voltaria para a lista de remoção."""
+    if not _actions_enabled():
+        raise HTTPException(status_code=400, detail="Ações desligadas no servidor (OFFBOARDING_ACTIONS_ENABLED).")
+    actor = _actor(request)
+    conn = get_db()
+    try:
+        a = conn.execute("SELECT * FROM offboarding_actions WHERE id=? AND action='desativar' AND status='ok'",
+                         (req.action_id,)).fetchone()
+        if not a or a["platform"] not in ("365", "google"):
+            raise HTTPException(status_code=400, detail="Essa ação não pode ser desfeita por aqui.")
+        if conn.execute("SELECT 1 FROM offboarding_actions WHERE action='reativar' AND status='ok' AND extra=?",
+                        (str(a["id"]),)).fetchone():
+            raise HTTPException(status_code=400, detail="Já foi reativada.")
+        m, email = dict(a), a["account_email"]
+        try:
+            if a["platform"] == "365":
+                cfg = get_graph_config()
+                token = get_graph_token(cfg["tenant_id"], cfg["client_id"], cfg["client_secret"])
+                key = _m365_key(conn, email)
+                graph_api.set_account_enabled(token, key, True)
+                skus = (json.loads(a["extra"] or "{}") or {}).get("licenses_removed") or []
+                graph_api.add_licenses(token, key, skus)
+                conn.execute("UPDATE ms365_users SET account_enabled=1 WHERE LOWER(email)=? OR LOWER(upn)=?", (email, email))
+                det = "Entrada liberada" + (f"; {len(skus)} licença(s) devolvida(s)" if skus else "")
+            else:
+                _google_post("unsuspend", email)
+                conn.execute("UPDATE google_users SET status='active' WHERE LOWER(email)=?", (email,))
+                det = "Suspensão removida no Google"
+        except Exception as e:
+            conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
+                status, detail, extra, actor) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (m["matricula"], m["person_name"], m["platform"], email, "reativar", "erro", str(e)[:500], str(a["id"]), actor))
+            conn.commit()
+            raise HTTPException(status_code=502, detail=str(e)[:300])
+        conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
+            status, detail, extra, actor) VALUES (?,?,?,?,?,?,?,?,?)""",
+            (m["matricula"], m["person_name"], m["platform"], email, "reativar", "ok", det, str(a["id"]), actor))
+        conn.execute("""INSERT INTO offboarding_decisions (matricula, platform, account_email, decision) VALUES (?,?,?,'rejeitar')
+            ON CONFLICT(matricula, platform, account_email) DO UPDATE SET decision='rejeitar', decided_at=CURRENT_TIMESTAMP""",
+            (m["matricula"], m["platform"], email))
+        conn.commit()
+    finally:
+        conn.close()
+    _safe_rebuild_offboarding()
+    return {"message": det}
+
+
+# Desfeito = reativado pelo painel OU revertido por sincronização externa (AD local).
+_UNDONE_SQL = ("SELECT 1 FROM offboarding_actions r WHERE r.extra=CAST(a.id AS TEXT) AND "
+               "((r.action='reativar' AND r.status='ok') OR r.action='revertido')")
+
+def _reconcile_m365_actions(conn) -> int:
+    """Depois do sync do M365: conta que o painel desativou e voltou a ficar ativa
+    (ex.: Entra Connect sobrescrevendo a partir do AD local) vira um alerta no Histórico."""
+    rows = conn.execute(f"""SELECT a.*, u.on_prem FROM offboarding_actions a
+        JOIN ms365_users u ON LOWER(u.email)=a.account_email OR LOWER(u.upn)=a.account_email
+        WHERE a.platform='365' AND a.action='desativar' AND a.status='ok' AND u.account_enabled=1
+        AND NOT EXISTS ({_UNDONE_SQL})""").fetchall()
+    for a in rows:
+        det = "Voltou a ficar ATIVA no Azure após a desativação"
+        det += (": conta sincronizada do AD local, desative no Active Directory (use o script PowerShell)"
+                if a["on_prem"] else ": verifique se alguém a reativou")
+        conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
+            status, detail, extra, actor) VALUES (?,?,?,?,'revertido','alerta',?,?,'sync')""",
+            (a["matricula"], a["person_name"], "365", a["account_email"], det, str(a["id"])))
+    return len(rows)
+
+@app.get("/offboarding/ad-local-script")
+def offboarding_ad_local_script():
+    """Script PowerShell para desativar no AD local as contas em 'Remover' que vêm do AD
+    (o Graph não consegue: o Entra Connect sobrescreve a nuvem)."""
+    conn = get_db()
+    try:
+        rows = conn.execute("""SELECT DISTINCT m.matricula, m.person_name, u.upn FROM offboarding_matches m
+            JOIN ms365_users u ON LOWER(u.email)=m.account_email OR LOWER(u.upn)=m.account_email
+            WHERE m.platform='365' AND m.confidence='agir' AND u.on_prem=1 AND u.account_enabled=1
+            ORDER BY u.upn""").fetchall()
+    finally:
+        conn.close()
+    lines = "\n".join(f"    '{r['upn']}'   # mat. {r['matricula']} - {(r['person_name'] or '').replace(chr(39), '')}" for r in rows)
+    from fastapi.responses import Response
+    script = f"""# AccessGuard - desativar no AD LOCAL contas de desligados ({datetime.now():%d/%m/%Y %H:%M})
+# {len(rows)} conta(s). O Entra Connect replica para o Azure/M365 no próximo ciclo (~30 min).
+#
+# Rodar num servidor do domínio com o módulo ActiveDirectory (RSAT), como admin do AD.
+# 1) Primeiro SEM parâmetro: só mostra o que faria.
+#      .\\desativar-ad-local.ps1
+# 2) Conferiu? Rode de verdade:
+#      .\\desativar-ad-local.ps1 -Executar
+# Do seu PC (com RSAT), apontando para um controlador de domínio e/ou outra conta:
+#      .\\desativar-ad-local.ps1 -Server dc01.dominio.local -Credential (Get-Credential)
+param([switch]$Executar, [string]$Server, [pscredential]$Credential)
+
+# ===== No PowerShell ISE (botão Play): troque para $true para desativar de verdade =====
+$MODO_REAL = $false
+# =======================================================================================
+if ($MODO_REAL) {{ $Executar = $true }}
+
+Import-Module ActiveDirectory -ErrorAction Stop
+if ($Executar) {{
+    $log = Join-Path ([Environment]::GetFolderPath('Desktop')) ("desativar-ad-local-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+    Start-Transcript -Path $log | Out-Null
+    Write-Host "MODO REAL - log em $log" -ForegroundColor Red
+}}
+$ad = @{{}}
+if ($Server) {{ $ad.Server = $Server }}
+if ($Credential) {{ $ad.Credential = $Credential }}
+
+$contas = @(
+{lines}
+)
+
+foreach ($upn in $contas) {{
+    $u = Get-ADUser @ad -Filter "UserPrincipalName -eq '$upn'" -Properties Enabled
+    if (-not $u) {{ Write-Warning "Não encontrado no AD: $upn"; continue }}
+    if (-not $u.Enabled) {{ Write-Host "Já desativada: $upn"; continue }}
+    if ($Executar) {{
+        Disable-ADAccount @ad -Identity $u
+        Write-Host "DESATIVADA: $upn" -ForegroundColor Yellow
+    }} else {{
+        Write-Host "[simulação] desativaria: $upn" -ForegroundColor Cyan
+    }}
+}}
+if ($Executar) {{ Stop-Transcript | Out-Null; Write-Host "`nConcluído. Log salvo em $log" }} else {{ Write-Host "`nNada foi alterado. Para valer: troque `$MODO_REAL para `$true (linha do topo) e clique em Play, ou rode com -Executar." }}
+"""
+    return Response(("\ufeff" + script.replace("\n", "\r\n")).encode("utf-8"), media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="desativar-ad-local.ps1"'})

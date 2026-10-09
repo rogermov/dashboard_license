@@ -1,15 +1,18 @@
 import React,{useState,useEffect} from 'react';
 import {useSearchParams} from 'react-router-dom';
-import {Search,Download,Check,X} from 'lucide-react';
+import {Search,Download,Check,X,Power,RotateCcw} from 'lucide-react';
 import {api} from '../hooks/api.js';
 import { PLATFORMS, PLATFORM_LABELS as PL, PLATFORM_COLORS as PC } from '../lib/platforms.js';
 import { exportCSV } from '../lib/csv.js';
 import RiskBadge from '../components/RiskBadge.jsx';
 import ErrorBanner from '../components/ErrorBanner.jsx';
+import DeactivateModal,{API_PLATFORMS} from '../components/DeactivateModal.jsx';
 
-const TABS=[{id:'risk',label:'Remover acesso'},{id:'review',label:'Revisar'},{id:'licensed',label:'Licenças M365'},{id:'all',label:'Todos desligados'},{id:'azure',label:'Exportar M365'}];
-const ENDPOINT={risk:'/users/risk',review:'/offboarding/review',licensed:'/offboarding/m365-licensed',all:'/users/terminated'};
+const TABS=[{id:'risk',label:'Remover acesso'},{id:'review',label:'Revisar'},{id:'licensed',label:'Licenças M365'},{id:'all',label:'Todos desligados'},{id:'history',label:'Histórico'}];
+const ENDPOINT={risk:'/users/risk',review:'/offboarding/review',licensed:'/offboarding/m365-licensed',all:'/users/terminated',history:'/offboarding/actions'};
 const STATUS={agir:['Remover','var(--red)'],revisar:['Revisar','#d97706'],recontratado:['Recontratado','var(--green)'],sem_conta:['Sem conta ativa','var(--text3)'],fora_da_gestao:['Fora da gestão','var(--text3)']};
+const ACT_STATUS={alerta:['Voltou a ficar ativa','#d97706'],ok:['Feito','var(--green)'],manual:['Feito (manual)','var(--green)'],simulado:['Simulado','var(--blue-500)'],erro:['Erro','var(--red)'],bloqueado:['Bloqueado','#d97706']};
+const accKey=(mat,platform,email)=>`${mat}|${platform}|${email}`;
 const fmtDate=d=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(d||'');return m?`${m[3]}/${m[2]}/${m[1]}`:(d||'—');};
 const today=()=>new Date().toISOString().slice(0,10);
 
@@ -38,16 +41,19 @@ export default function Users(){
   const[params,setParams]=useSearchParams();
   const tab=TABS.some(t=>t.id===params.get('tab'))?params.get('tab'):'risk';
   const setTab=id=>setParams(id==='risk'?{}:{tab:id});
-  const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');
+  const[search,setSearch]=useState('');const[platform,setPlatform]=useState('');const[kind,setKind]=useState('');
   const[data,setData]=useState([]);const[loading,setLoading]=useState(false);const[error,setError]=useState(null);
   const[busy,setBusy]=useState(null);
+  const[selected,setSelected]=useState(new Set());const[config,setConfig]=useState(null);const[modalItems,setModalItems]=useState(null);
+  useEffect(()=>{api.get('/offboarding/actions/config',{noCache:true}).then(setConfig).catch(()=>{});},[]);
 
   const load=async()=>{
     setLoading(true);setError(null);
     try{
       const p=new URLSearchParams();if(search)p.append('search',search);
-      if(tab==='azure')p.append('platform','365');else if(platform&&tab!=='all')p.append('platform',platform);
-      setData(await api.get(`${ENDPOINT[tab==='azure'?'risk':tab]}?${p}`,{noCache:true}));
+      if(platform&&(tab==='risk'||tab==='review'))p.append('platform',platform);
+      setSelected(new Set());
+      setData(await api.get(`${ENDPOINT[tab]}?${p}`,{noCache:true}));
     }catch(e){setError(e.message||'Erro ao carregar usuários.');setData([]);}finally{setLoading(false);}
   };
   useEffect(()=>{load();},[tab,platform]);
@@ -60,14 +66,42 @@ export default function Users(){
     }catch(e){setError(e.message||'Erro ao salvar a decisão.');}finally{setBusy(null);}
   };
 
+  // Filtros da aba Remover: plataforma + tipo de conta. "Com domínio" = e-mail da empresa
+  // (não @...onmicrosoft.com): são as que ficaram ativas e têm prioridade.
+  const isTenant=e=>/onmicrosoft\.com$/i.test(e||'');
+  const accOk=a=>(!platform||a.platform===platform)&&(!kind||(kind==='domain'?!isTenant(a.email):isTenant(a.email)));
+  const riskRows=tab==='risk'?data.filter(u=>(u.accounts||[]).some(accOk)).sort((x,y)=>(x.accounts.some(a=>accOk(a)&&!isTenant(a.email))?0:1)-(y.accounts.some(a=>accOk(a)&&!isTenant(a.email))?0:1)):data;
+  const domainCount=tab==='risk'?data.reduce((n,u)=>n+(u.accounts||[]).filter(a=>(!platform||a.platform===platform)&&!isTenant(a.email)).length,0):0;
+  const visibleAccounts=tab==='risk'?riskRows.flatMap(u=>(u.accounts||[]).filter(accOk).map(a=>({matricula:u.matricula,person_name:u.name,platform:a.platform,account_email:a.email}))):[];
+  const toggle=k=>setSelected(s=>{const n=new Set(s);n.has(k)?n.delete(k):n.add(k);return n;});
+  const allSelected=visibleAccounts.length>0&&visibleAccounts.every(a=>selected.has(accKey(a.matricula,a.platform,a.account_email)));
+  const toggleAll=()=>setSelected(allSelected?new Set():new Set(visibleAccounts.map(a=>accKey(a.matricula,a.platform,a.account_email))));
+  const openModal=()=>setModalItems(visibleAccounts.filter(a=>selected.has(accKey(a.matricula,a.platform,a.account_email))));
+  const adLocalCount=tab==='risk'?data.reduce((n,u)=>n+(u.accounts||[]).filter(a=>a.ad_local).length,0):0;
+  const downloadAdScript=async()=>{
+    try{const r=await fetch('/api/offboarding/ad-local-script');if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      const url=URL.createObjectURL(await r.blob());const el=document.createElement('a');el.href=url;el.download='desativar-ad-local.ps1';document.body.appendChild(el);el.click();el.remove();setTimeout(()=>URL.revokeObjectURL(url),2000);
+    }catch(e){setError(e.message||'Erro ao gerar o script.');}
+  };
+  const toggleMode=async()=>{
+    const on=!config?.enabled;
+    if(on&&!window.confirm('Ligar o MODO REAL? A partir daqui, "Desativar" altera as contas de verdade no M365, Google e DocuSign.'))return;
+    try{setConfig(await api.post('/offboarding/actions/mode',{enabled:on}));}catch(e){setError(e.message||'Erro ao trocar o modo.');}
+  };
+  const reactivate=async a=>{
+    if(!window.confirm(`Reativar ${a.account_email} (${PL[a.platform]||a.platform})? O match será marcado como "Não é a pessoa".`))return;
+    setBusy(a.id);try{await api.post('/offboarding/reactivate',{action_id:a.id});load();}catch(e){setError(e.message||'Erro ao reativar.');}finally{setBusy(null);}
+  };
+
   // CSV: uma linha por conta — é o que quem vai desativar precisa.
   const exportRows=()=>{
     if(tab==='review')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),plataforma:PL[m.platform]||m.platform,conta:m.account_email,nome_na_conta:m.account_name,status_conta:m.account_status,motivo:m.method,observacao:m.detail}));
     if(tab==='licensed')return data.map(m=>({matricula:m.matricula,nome:m.person_name,empresa:m.company,desligamento:fmtDate(m.termination_date),conta:m.account_email,office:m.office.length?'sim':'não',licencas:m.licenses.join('; '),situacao:m.confidence==='agir'?'Remover':'Revisar'}));
-    if(tab==='all')return data.map(u=>({matricula:u.matricula,nome:u.name,empresa:u.department,cargo:u.cargo,desligamento:fmtDate(u.termination_date),situacao:(STATUS[u.match_status]||[u.match_status])[0],detalhe:u.match_detail}));
-    return data.flatMap(u=>(u.accounts||[]).filter(a=>tab!=='azure'||a.platform==='365').map(a=>({matricula:u.matricula,nome:u.name,empresa:u.department,desligamento:fmtDate(u.termination_date),plataforma:PL[a.platform]||a.platform,conta:a.email,nome_na_conta:a.name,como_identificado:a.method})));
+    if(tab==='all')return data.map(u=>({matricula:u.matricula,nome:u.name,empresa:u.department,cargo:u.cargo,desligamento:fmtDate(u.termination_date),situacao:(STATUS[u.match_status]||[u.match_status])[0],detalhe:u.match_detail,desativadas:(u.deactivated||[]).join(' | ')}));
+    if(tab==='history')return data.map(a=>({quando:a.created_at,matricula:a.matricula,nome:a.person_name,plataforma:PL[a.platform]||a.platform,conta:a.account_email,acao:a.action,resultado:(ACT_STATUS[a.status]||[a.status])[0],detalhe:a.detail,por:a.actor}));
+    return data.flatMap(u=>(u.accounts||[]).map(a=>({matricula:u.matricula,nome:u.name,empresa:u.department,desligamento:fmtDate(u.termination_date),plataforma:PL[a.platform]||a.platform,conta:a.email,nome_na_conta:a.name,como_identificado:a.method})));
   };
-  const fileName={licensed:'licencas-m365',risk:'remover-acesso',review:'revisar',all:'desligados',azure:'desativar-m365'}[tab];
+  const fileName={licensed:'licencas-m365',risk:'remover-acesso',review:'revisar',all:'desligados',history:'historico-desativacoes'}[tab];
 
   return<div style={{animation:'fadeIn 0.3s ease'}}>
     <div style={{marginBottom:'1.75rem'}}><h1 style={{fontWeight:700,fontSize:'1.5rem',color:'var(--text)'}}>Usuários</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Desligados e seus acessos ativos por plataforma</p></div>
@@ -78,14 +112,30 @@ export default function Users(){
     <ErrorBanner message={error} onRetry={load}/>
     <div style={{display:'flex',gap:'0.6rem',marginBottom:'1rem'}}>
       <div style={{position:'relative',flex:1}}><Search size={14} color="var(--text3)" style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)'}}/><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&load()} placeholder="Buscar por nome, matrícula ou e-mail... (Enter)" style={{...inputStyle,width:'100%',padding:'0.6rem 0.75rem 0.6rem 2.1rem'}} onFocus={e=>e.target.style.borderColor='var(--accent)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>
+      {tab==='risk'&&<select value={kind} onChange={e=>{setKind(e.target.value);setSelected(new Set());}} style={inputStyle}><option value="">Todas as contas</option><option value="domain">Com domínio da empresa ({domainCount}) ★</option><option value="tenant">Só @onmicrosoft.com</option></select>}
       {(tab==='risk'||tab==='review')&&<select value={platform} onChange={e=>setPlatform(e.target.value)} style={inputStyle}><option value="">Todas plataformas</option>{PLATFORMS.map(p=><option key={p} value={p}>{PL[p]}</option>)}</select>}
       <button onClick={()=>exportCSV(exportRows(),`${fileName}-${today()}.csv`)} disabled={!data.length} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.6rem 0.9rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',color:'var(--text2)',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)',opacity:data.length?1:0.5}}><Download size={13}/>CSV</button>
     </div>
 
-    {(tab==='risk'||tab==='azure')&&<Table headers={['Pessoa',tab==='azure'?'Conta M365':'Contas ativas','Risco']} loading={loading} count={data.length} empty="✓ Nenhum desligado com acesso ativo confirmado" emptyColor="var(--green)">
-      {data.map(u=><Row key={u.matricula}>
+    {tab==='risk'&&<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.75rem',padding:'0.6rem 0.9rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',boxShadow:'var(--shadow-sm)'}}>
+      <label style={{display:'flex',gap:8,alignItems:'center',fontSize:'0.8rem',color:'var(--text2)'}}><input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={!visibleAccounts.length}/>Selecionar todas ({visibleAccounts.length} contas{platform?` · ${PL[platform]}`:''})</label>
+      <div style={{display:'flex',gap:10,alignItems:'center'}}>
+        {config&&(config.allowed
+          ?<button onClick={toggleMode} title={config.enabled?'Clique para voltar à simulação':'Clique para ligar as ações reais'} style={{display:'flex',alignItems:'center',gap:8,padding:'0.3rem 0.7rem',borderRadius:20,border:`1px solid ${config.enabled?'var(--red)':'var(--border)'}`,background:config.enabled?'#fee2e2':'var(--bg3)',color:config.enabled?'var(--red)':'var(--text2)',fontSize:'0.75rem',fontWeight:600}}>
+              <span style={{width:28,height:16,borderRadius:8,background:config.enabled?'var(--red)':'var(--border2, #cbd5e1)',position:'relative',transition:'background 0.15s'}}><span style={{position:'absolute',top:2,left:config.enabled?14:2,width:12,height:12,borderRadius:'50%',background:'#fff',transition:'left 0.15s'}}/></span>
+              {config.enabled?'Modo real':'Simulação'}
+            </button>
+          :<span title="OFFBOARDING_ACTIONS_ENABLED=false no .env do servidor" style={{fontSize:'0.72rem',padding:'2px 8px',borderRadius:10,border:'1px solid var(--blue-500)',color:'var(--blue-500)'}}>Simulação (travado no servidor)</span>)}
+        {adLocalCount>0&&<button onClick={downloadAdScript} title="Contas sincronizadas do AD local não podem ser desativadas pelo painel: o Entra Connect reativa. Baixe o script para o admin do AD rodar." style={{display:'flex',alignItems:'center',gap:6,padding:'0.45rem 0.8rem',background:'var(--bg2)',border:'1px solid #fca5a5',borderRadius:'var(--radius)',color:'var(--red)',fontSize:'0.78rem'}}><Download size={13}/>Script AD local ({adLocalCount})</button>}
+        <button onClick={openModal} disabled={!selected.size} style={{display:'flex',alignItems:'center',gap:6,padding:'0.45rem 1rem',background:'var(--red)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontWeight:600,fontSize:'0.8rem',opacity:selected.size?1:0.45}}><Power size={14}/>Desativar selecionadas ({selected.size})</button>
+      </div>
+    </div>}
+    {modalItems&&<DeactivateModal items={modalItems} config={config} onClose={()=>setModalItems(null)} onDone={()=>{setModalItems(null);load();}}/>}
+
+    {tab==='risk'&&<Table headers={['Pessoa','Contas ativas','Risco']} loading={loading} count={riskRows.length} empty="✓ Nenhum desligado com acesso ativo confirmado" emptyColor="var(--green)">
+      {riskRows.map(u=><Row key={u.matricula}>
         <td style={td}><Person name={u.name} matricula={u.matricula} company={u.department} date={u.termination_date}/></td>
-        <td style={td}><div style={{display:'flex',flexDirection:'column',gap:4}}>{(u.accounts||[]).filter(a=>tab!=='azure'||a.platform==='365').map((a,i)=><div key={i} style={{display:'flex',gap:6,alignItems:'center'}}><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}} title={a.method}>{a.email}</span></div>)}</div></td>
+        <td style={td}><div style={{display:'flex',flexDirection:'column',gap:4}}>{(u.accounts||[]).filter(accOk).map((a,i)=>{const k=accKey(u.matricula,a.platform,a.email);return<label key={i} style={{display:'flex',gap:6,alignItems:'center',cursor:'pointer'}}><input type="checkbox" checked={selected.has(k)} onChange={()=>toggle(k)}/><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}} title={a.method}>{a.email}</span>{!API_PLATFORMS.includes(a.platform)&&<span style={{fontSize:'0.65rem',color:'var(--text3)'}}>(manual)</span>}{a.ad_local&&<span title="Sincronizada do AD local: o painel não consegue desativar. Desative no Active Directory (o Entra replica)." style={{fontSize:'0.65rem',color:'var(--red)',border:'1px solid #fca5a5',borderRadius:4,padding:'0 4px'}}>AD local</span>}{a.guest&&<span title="Conta convidada (#EXT#) no tenant da holding: desativar só tira o acesso à holding. A caixa de e-mail real fica em outro tenant." style={{fontSize:'0.65rem',color:'#d97706',border:'1px solid #fcd34d',borderRadius:4,padding:'0 4px'}}>convidado</span>}</label>;})}</div></td>
         <td style={td}><RiskBadge level={u.risk_level}/></td>
       </Row>)}
     </Table>}
@@ -112,13 +162,26 @@ export default function Users(){
       </Row>)}
     </Table></>}
 
-    {tab==='all'&&<Table headers={['Pessoa','Cargo','Situação','Detalhe']} loading={loading} count={data.length} empty="Nenhum desligado importado. Importe a planilha do RH em Importação.">
+    {tab==='all'&&<Table headers={['Pessoa','Cargo','Situação','Detalhe','Desativadas']} loading={loading} count={data.length} empty="Nenhum desligado importado. Importe a planilha do RH em Importação.">
       {data.map(u=><Row key={u.matricula}>
         <td style={td}><Person name={u.name} matricula={u.matricula} company={u.department} date={u.termination_date}/></td>
         <td style={{...td,color:'var(--text2)',fontSize:'0.78rem'}}>{u.cargo||'—'}</td>
         <td style={td}><StatusBadge status={u.match_status}/></td>
         <td style={{...td,color:'var(--text2)',fontSize:'0.78rem',maxWidth:380}}>{u.match_detail||'—'}</td>
+        <td style={{...td,...mono,color:'var(--green)',fontSize:'0.7rem'}}>{(u.deactivated||[]).map(d=><div key={d}>{d}</div>)}</td>
       </Row>)}
+    </Table>}
+
+    {tab==='history'&&<Table headers={['Quando','Pessoa','Conta','Ação','Resultado','Por','']} loading={loading} count={data.length} empty="Nenhuma ação registrada ainda.">
+      {data.map(a=>{const[l,c]=ACT_STATUS[a.status]||[a.status,'var(--text3)'];return<Row key={a.id}>
+        <td style={{...td,...mono,whiteSpace:'nowrap',color:'var(--text2)'}}>{a.created_at?.slice(0,16)}</td>
+        <td style={td}><div style={{fontWeight:500}}>{a.person_name||'—'}</div><div style={{...mono,color:'var(--text3)'}}>mat. {a.matricula}</div></td>
+        <td style={td}>{a.action==='modo'?'—':<div style={{display:'flex',gap:6,alignItems:'center'}}><Chip platform={a.platform}/><span style={{...mono,color:'var(--text2)'}}>{a.account_email}</span></div>}</td>
+        <td style={{...td,fontSize:'0.78rem'}}>{{reativar:'Reativar',modo:'Modo',revertido:'Verificação'}[a.action]||'Desativar'}</td>
+        <td style={{...td,fontSize:'0.75rem',maxWidth:320}}><span style={{color:c,fontWeight:600}}>{l}</span><div style={{color:'var(--text2)',marginTop:2}}>{a.detail}</div></td>
+        <td style={{...td,...mono,color:'var(--text3)'}}>{a.actor}</td>
+        <td style={td}>{a.can_reactivate&&<button disabled={busy===a.id} onClick={()=>reactivate(a)} title="Desfazer" style={{display:'flex',alignItems:'center',gap:4,padding:'0.3rem 0.6rem',background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:6,color:'var(--text2)',fontSize:'0.72rem',whiteSpace:'nowrap'}}><RotateCcw size={12}/>Reativar</button>}</td>
+      </Row>;})}
     </Table>}
   </div>;
 }

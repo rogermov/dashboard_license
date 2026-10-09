@@ -52,7 +52,7 @@ const handleClearTerminated = async () => {
   const chartData=Object.entries(stats?.exposure_by_platform||{}).map(([k,v])=>({name:PL[k]||k,key:k,value:v})).sort((a,b)=>b.value-a.value);
   return(<div style={{animation:'fadeIn 0.3s ease'}}>
     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1.75rem'}}>
-      <div><h1 style={{fontWeight:700,fontSize:'1.5rem',color:'var(--text)'}}>Dashboard</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Visão geral de acessos de usuários desligados</p></div>
+      <div><h1 className="h1">Visão geral</h1><p style={{color:'var(--text2)',fontSize:'0.85rem',marginTop:3}}>Visão geral de acessos de usuários desligados</p></div>
       <div style={{ display: 'flex', gap: '0.75rem' }}>
         <button onClick={handleClearTerminated} style={{display:'flex',alignItems:'center',gap:'0.4rem',padding:'0.5rem 1rem',background:'var(--red)',border:'none',borderRadius:'var(--radius)',color:'#fff',fontSize:'0.82rem',boxShadow:'var(--shadow-sm)', cursor:'pointer'}}>
           Limpar Desligados
@@ -66,7 +66,7 @@ const handleClearTerminated = async () => {
     <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'1rem',marginBottom:'1.5rem'}}>
       <StatCard label="Desligados na base" icon={Users} loading={loading} value={stats?.total_terminated??0} sub="total importado do RH" color="var(--blue-500)"/>
       <StatCard label="Com acesso ativo" icon={AlertTriangle} loading={loading} value={stats?.terminated_with_active_access??0} sub="certeza (matrícula/e-mail) — remover" color="var(--red)"/>
-      <Link to="/users?tab=review" style={{textDecoration:'none'}}><StatCard label="A revisar" icon={Activity} loading={loading} value={stats?.to_review??0} sub={`sem certeza total · ${stats?.rehired??0} recontratados`} color="#d97706"/></Link>
+      <Link to="/offboarding/revisar" style={{textDecoration:'none'}}><StatCard label="A revisar" icon={Activity} loading={loading} value={stats?.to_review??0} sub={`sem certeza total · ${stats?.rehired??0} recontratados`} color="#d97706"/></Link>
     </div>
     {licHealth.length>0&&(()=>{
       const withPct=licHealth.map(l=>({...l,ratio:l.total>0?l.used/l.total:0}));

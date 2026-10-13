@@ -32,6 +32,33 @@ if _cors_origins:
     app.add_middleware(CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 DB_PATH   = "/data/accessguard.db"
+
+import fcntl, functools, time as _time
+SYNC_LOCK_PATH = os.path.join(os.path.dirname(DB_PATH), ".sync.lock")
+SYNC_WAIT_S = 240   # abaixo do proxy_read_timeout (300 s) do nginx
+
+def serialized_sync(fn):
+    """Syncs/importações gravam milhares de linhas; o SQLite aceita uma escrita por vez.
+    Em vez de 'database is locked', cada um espera a vez (até SYNC_WAIT_S) — funciona
+    entre os workers do uvicorn porque o lock é no arquivo."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        os.makedirs(os.path.dirname(SYNC_LOCK_PATH), exist_ok=True)
+        with open(SYNC_LOCK_PATH, "w") as fh:
+            deadline = _time.monotonic() + SYNC_WAIT_S
+            while True:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if _time.monotonic() > deadline:
+                        raise HTTPException(status_code=409, detail="Outra sincronização ainda está rodando. Tente de novo em 1 minuto.")
+                    _time.sleep(1)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    return wrapper
 PLATFORMS = ["365", "docusign", "lucid", "bitbucket", "jira", "google"]
 
 EMAIL_COLUMN_HINTS = {
@@ -60,7 +87,7 @@ def get_db():
     # busy_timeout evita "database is locked" imediato quando duas escritas coincidem
     # (ex.: dois syncs, ou sync + import): a conexão espera até 5s pelo lock em vez
     # de falhar na hora. Essencial com múltiplos workers/threads sobre o mesmo SQLite.
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA cache_size=-32000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA temp_store=MEMORY")
@@ -532,6 +559,7 @@ def docusign_status():
     }
 
 @app.post("/docusign/sync")
+@serialized_sync
 def docusign_sync(account_id: str = ""):
     config = get_config()
     token = get_jwt_token(config["integration_key"], config["user_id"], config["rsa_key_path"])
@@ -657,6 +685,7 @@ def docusign_users(account_id: str="", status: str="", search: str="", profile: 
         conn.close()
 
 @app.post("/docusign/sync-licenses")
+@serialized_sync
 def docusign_sync_licenses():
     """Atualiza só as licenças reais (Free/Professional) via Admin API, sem rodar o sync completo de usuários/envelopes."""
     config = get_config()
@@ -734,6 +763,7 @@ def docusign_envelopes(start: str, end: str):
 # ─── GOOGLE WORKSPACE ENDPOINTS ───
 
 @app.post("/google/sync")
+@serialized_sync
 def google_sync():
     url = os.getenv("GOOGLE_APPS_SCRIPT_URL")
     if not url: raise HTTPException(status_code=400, detail="URL do Apps Script não configurada")
@@ -742,8 +772,16 @@ def google_sync():
     try:
         # Timeout folgado: o Apps Script busca milhares de usuários do Workspace
         # (6k+), e com 45s estourava de vez em quando. 120s dá margem.
-        resp = requests.get(url, timeout=120)
-        data = resp.json()
+        for tentativa in (1, 2):
+            resp = requests.get(url, timeout=120)
+            try:
+                data = resp.json()
+                break
+            except ValueError:
+                if tentativa == 2:
+                    raise Exception(f"O Apps Script respondeu algo que não é JSON (HTTP {resp.status_code}). "
+                                    "Se acabou de publicar uma versão nova ou mudar permissões, rode autorizar() no editor e tente de novo.")
+                _time.sleep(3)
         if not data.get("success"): raise Exception(data.get("error", "Erro na API Google"))
 
         users = data.get("users", [])
@@ -777,7 +815,7 @@ def google_sync():
         raise
     except Exception as e:
         print(f"Erro no google_sync: {e}")
-        raise HTTPException(status_code=500, detail="Falha ao sincronizar o Google Workspace. Verifique os logs do servidor.")
+        raise HTTPException(status_code=500, detail=f"Falha ao sincronizar o Google Workspace: {str(e)[:300]}")
     finally:
         conn.close()
 
@@ -842,6 +880,7 @@ def microsoft365_users(status: str = "", search: str = "", license: str = ""):
         conn.close()
 
 @app.post("/microsoft365/sync")
+@serialized_sync
 def microsoft365_sync():
     config = get_graph_config()
     if not config["tenant_id"] or not config["client_id"] or not config["client_secret"]:
@@ -901,10 +940,14 @@ def microsoft365_sync():
         return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga.{aviso}"}
     except Exception as e:
         print(f"Erro no microsoft365_sync: {e}")
-        conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
-            ON CONFLICT(id) DO UPDATE SET error=?""", (str(e), str(e)))
-        conn.commit()
-        raise HTTPException(status_code=500, detail="Falha ao sincronizar o Microsoft 365. Verifique os logs do servidor.")
+        try:   # registrar o erro não pode gerar um segundo erro (ex.: banco ocupado)
+            conn.rollback()
+            conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
+                ON CONFLICT(id) DO UPDATE SET error=?""", (str(e), str(e)))
+            conn.commit()
+        except sqlite3.Error:
+            pass
+        raise HTTPException(status_code=500, detail=f"Falha ao sincronizar o Microsoft 365: {str(e)[:300]}")
     finally:
         conn.close()
 
@@ -1055,6 +1098,7 @@ def alerts_changes_status():
         conn.close()
 
 @app.post("/alerts/docusign-live-check")
+@serialized_sync
 def alerts_docusign_live_check():
     """Opção 2 (near real-time): atualiza SÓ os usuários do DocuSign via API leve por
     conta (get_users_for_account, sem o export pesado de licenças) e checa movimentações,
@@ -1205,6 +1249,7 @@ def _safe_rebuild_offboarding():
         print(f"Erro ao recalcular offboarding: {e}")
 
 @app.post("/offboarding/import")
+@serialized_sync
 def offboarding_import(url: str = Form(...)):
     """Importa a planilha mensal do RH (link do Google Sheets). Acumula o histórico: quem
     saiu em meses anteriores e ainda tem acesso continua aparecendo."""

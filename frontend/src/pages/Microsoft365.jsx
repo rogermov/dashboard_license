@@ -105,9 +105,8 @@ export default function Microsoft365() {
             const total = l.total || 0;
             const ratio = total > 0 ? l.consumed / total : 0;
             const pct = Math.min(100, ratio * 100);
-            const over = total > 0 && l.consumed > total;      // estourou o limite
-            const near = !over && ratio >= 0.9;                 // 90%+ dos assentos usados
-            const color = over ? 'var(--red)' : near ? 'var(--yellow)' : 'var(--blue-400)';
+            // No M365, 100% de uso é normal (compra-se o que se usa): sem alerta de limite.
+            const color = 'var(--p-365)';
             return (
               <div key={l.sku_id} className="card--interactive" style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.1rem', boxShadow: 'var(--shadow-sm)', borderTop: `3px solid ${color}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={14} color="var(--blue-600)" /><span style={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.3 }}>{l.friendly_name}</span></div>
@@ -115,11 +114,6 @@ export default function Microsoft365() {
                 <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: '0.5rem', overflow: 'hidden' }}>
                   <div className="bar-fill" style={{ height: '100%', width: `${pct}%`, background: color }} />
                 </div>
-                {(over || near) && (
-                  <div style={{ fontSize: '0.66rem', fontWeight: 600, color, marginTop: '0.4rem' }}>
-                    {over ? `⚠ ${l.consumed - total} acima do limite` : '⚠ perto do limite (90%+)'}
-                  </div>
-                )}
               </div>
             );
           })}

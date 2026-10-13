@@ -6,6 +6,7 @@ import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import { CountUp } from '../components/ui.jsx';
+import GapFixModal from '../components/GapFixModal.jsx';
 
 const SM = { active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, pending: { label: 'Pendente', color: 'var(--yellow)', bg: 'var(--yellow-bg)' } };
 
@@ -28,6 +29,7 @@ export default function Docusign() {
   const [filterLicense, setFilterLicense] = useState('');
   const [availableLicenses, setAvailableLicenses] = useState([]);
   const [gapOnly, setGapOnly] = useState(false);
+  const [gapModal, setGapModal] = useState(false);
   const [usersLoading, setUsersLoading] = useState(false);
   const [importing, setImporting] = useState(false);
 
@@ -220,7 +222,12 @@ export default function Docusign() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><AlertOctagon size={15} color={status.license_summary.gap_count > 0 ? 'var(--red)' : 'var(--text3)'} /><span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Gaps de Licença</span></div>
                 <div style={{ fontSize: '1.5rem', fontWeight: 700, color: status.license_summary.gap_count > 0 ? 'var(--red)' : 'var(--text)' }}>{status.license_summary.gap_count} <span style={{ fontSize: '0.78rem', fontWeight: 500, color: 'var(--text3)' }}>Professional pago sem perfil de envio</span></div>
                 <div style={{ fontSize: '0.68rem', color: 'var(--text3)', marginTop: '0.4rem' }}>Clique para ver a lista — só conta com licença real importada.</div>
+                {status.license_summary.gap_count > 0 && (
+                  <button type="button" className="btn btn--sm btn--priority" style={{ marginTop: '0.6rem' }}
+                    onClick={e => { e.stopPropagation(); setGapModal(true); }}>Corrigir gaps (Free + Viewer)</button>
+                )}
               </div>
+              {gapModal && <GapFixModal onClose={() => setGapModal(false)} onDone={() => { setGapModal(false); loadStatus(); loadUsers(); }} />}
             </div>
           )}
 

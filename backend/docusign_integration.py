@@ -339,3 +339,61 @@ def close_user(account: dict, access_token: str, user_id: str) -> None:
         err = (u.get("errorDetails") or {}).get("message")
         if err:
             raise Exception(f"DocuSign recusou: {err}")
+
+
+# ─── Downgrade de licença (Free + perfil Viewer) ─────────────────────────────
+# Mesma chamada do script de downgrade mensal: PUT /users aceita licenseType e
+# permissionProfileId (a leitura não devolve licenseType; ela vem do export da Admin API).
+
+def _base(account: dict) -> str:
+    return f"{(account.get('base_uri') or '').rstrip('/')}/restapi/v2.1/accounts/{account['id']}"
+
+def get_permission_profile_id(account: dict, access_token: str, name: str):
+    r = requests.get(f"{_base(account)}/permission_profiles", headers={"Authorization": f"Bearer {access_token}"}, timeout=20)
+    r.raise_for_status()
+    for p in r.json().get("permissionProfiles", []):
+        if (p.get("permissionProfileName") or "").lower() == name.lower():
+            return p.get("permissionProfileId")
+    return None
+
+def get_group_members(account: dict, access_token: str, group_name: str):
+    """(ok, ids, emails). ok=False se o grupo não existe ou não pôde ser lido."""
+    h = {"Authorization": f"Bearer {access_token}"}
+    r = requests.get(f"{_base(account)}/groups", headers=h, timeout=20)
+    if r.status_code != 200:
+        return False, set(), set()
+    gid = next((g.get("groupId") for g in r.json().get("groups", [])
+                if (g.get("groupName") or "").lower() == group_name.lower()), None)
+    if not gid:
+        return False, set(), set()
+    ids, emails, start = set(), set(), 0
+    while True:
+        r = requests.get(f"{_base(account)}/groups/{gid}/users?start_position={start}&count=100", headers=h, timeout=20)
+        if r.status_code != 200:
+            return False, set(), set()
+        d = r.json(); lote = d.get("users", [])
+        for m in lote:
+            if m.get("userId"): ids.add(m["userId"])
+            if m.get("email"): emails.add(m["email"].strip().lower())
+        start += len(lote)
+        total = int(d.get("totalSetSize") or 0)
+        if not lote or (total and start >= total):
+            break
+    return True, ids, emails
+
+def update_users(account: dict, access_token: str, users: list) -> dict:
+    """PUT em lote. users = [{userId, licenseType, permissionProfileId}]. Devolve {userId: erro|None}."""
+    out = {}
+    for i in range(0, len(users), 50):
+        lote = users[i:i + 50]
+        r = requests.put(f"{_base(account)}/users", json={"users": lote},
+                         headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}, timeout=60)
+        if r.status_code not in (200, 201):
+            for u in lote:
+                out[u["userId"]] = f"DocuSign {r.status_code}: {r.text[:200]}"
+            continue
+        retorno = {u.get("userId"): u for u in r.json().get("users", [])}
+        for u in lote:
+            err = ((retorno.get(u["userId"]) or {}).get("errorDetails") or {}).get("message")
+            out[u["userId"]] = err
+    return out

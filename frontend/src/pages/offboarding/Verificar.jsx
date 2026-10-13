@@ -10,7 +10,7 @@ const ACT_STATUS = {
   ok: ['Feito', 'success'], manual: ['Feito (manual)', 'success'], simulado: ['Simulado', 'info'],
   erro: ['Erro', 'danger'], bloqueado: ['Bloqueado', 'warning'], alerta: ['Voltou a ficar ativa', 'priority'],
 };
-const ACTION_LABEL = { desativar: 'Desativar', reativar: 'Reativar', modo: 'Modo', revertido: 'Verificação' };
+const ACTION_LABEL = { desativar: 'Desativar', reativar: 'Reativar/desfazer', modo: 'Modo', revertido: 'Verificação', downgrade: 'Downgrade DocuSign (Free + Viewer)' };
 const PERSON_STATUS = {
   agir: ['Remover', 'danger'], revisar: ['Revisar', 'warning'], recontratado: ['Recontratado', 'success'],
   sem_conta: ['Sem conta ativa', undefined], fora_da_gestao: ['Fora da gestão', undefined],

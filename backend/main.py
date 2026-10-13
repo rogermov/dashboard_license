@@ -1887,3 +1887,33 @@ def docusign_gaps_fix(req: GapFixRequest, request: Request):
     return {"mode": req.mode, "real": real, "results": results,
             "ok": sum(r["status"] == "ok" for r in results), "errors": sum(r["status"] == "erro" for r in results),
             "protegidos": sum(r["status"] == "bloqueado" for r in results)}
+
+
+# ─── Saúde de licenças (card da Visão geral) ─────────────────────────────────
+@app.get("/licenses/health")
+def licenses_health():
+    """Resumo por sistema. Só o DocuSign Professional tem alerta (contrato por assento);
+    no M365 100% de uso é normal, então só mostramos uso/total das licenças PAGAS."""
+    out = {"docusign": None, "m365": [], "google": None}
+    try:
+        st = docusign_status()
+        ls = st.get("license_summary") or {}
+        out["docusign"] = {"professional": ls.get("professional", 0), "seats": ls.get("included_seats"),
+                           "free": ls.get("free", 0), "gaps": ls.get("gap_count", 0)}
+    except Exception as e:
+        print(f"[licenses/health] docusign: {e}")
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT friendly_name, consumed, total FROM ms365_licenses").fetchall()
+        # SKUs "ilimitados" (10 mil+) são gratuitos/automáticos da Microsoft
+        paid = [{"name": r["friendly_name"], "consumed": r["consumed"], "total": r["total"], "office": _is_office(r["friendly_name"])}
+                for r in rows if r["total"] and r["total"] < 10000 and _is_paid_m365(r["friendly_name"])]
+        out["m365"] = sorted(paid, key=lambda x: (not x["office"], -x["total"]))
+        try:
+            g = {r[0]: r[1] for r in conn.execute("SELECT status, COUNT(*) FROM google_users GROUP BY status")}
+            out["google"] = {"active": g.get("active", 0), "suspended": g.get("suspended", 0), "total": sum(g.values())}
+        except sqlite3.OperationalError:
+            pass
+    finally:
+        conn.close()
+    return out

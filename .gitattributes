@@ -1,0 +1,4 @@
+# Scripts que rodam no Linux (servidor) precisam de quebra de linha LF.
+# Com CRLF o shebang vira "bash" e o cron falha em silêncio (aconteceu com o daily_sync.sh).
+*.sh text eol=lf
+*.tpl text eol=lf

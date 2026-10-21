@@ -1,13 +1,19 @@
 import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { RefreshCw, CheckCircle, XCircle, Search, Download, Loader, User, BadgeCheck } from 'lucide-react';
 import { api } from '../hooks/api.js';
 import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
 import { useToast } from '../hooks/useToast.js';
 import ErrorBanner from '../components/ErrorBanner.jsx';
-import { CountUp } from '../components/ui.jsx';
+import { CountUp, Tabs } from '../components/ui.jsx';
 
+// Cada tenant (Comporte, Holding Piracicabana…) é lido em separado: escolha na aba.
+// O tenant fica na URL (?tenant=) para poder mandar o link direto.
 export default function Microsoft365() {
+  const [params, setParams] = useSearchParams();
+  const tenant = params.get('tenant') || 'comporte';
+  const setTenant = t => setParams(p => { const n = new URLSearchParams(p); n.set('tenant', t); return n; }, { replace: true });
   const [status, setStatus] = useState(null);
   const [licenses, setLicenses] = useState([]);
   const [users, setUsers] = useState([]);
@@ -20,13 +26,14 @@ export default function Microsoft365() {
   const [error, setError] = useState(null);
   const { toast, showToast } = useToast();
 
-  const loadStatus = async () => { setLoading(true); try { setStatus(await api.get('/microsoft365/status', { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
-  const loadLicenses = async () => { try { setLicenses(await api.get('/microsoft365/licenses', { noCache: true })); } catch { setLicenses([]); } };
+  const q = `tenant=${encodeURIComponent(tenant)}`;
+  const loadStatus = async () => { setLoading(true); try { setStatus(await api.get(`/microsoft365/status?${q}`, { noCache: true })); } catch { showToast('Erro ao carregar status.', false); } finally { setLoading(false); } };
+  const loadLicenses = async () => { try { setLicenses(await api.get(`/microsoft365/licenses?${q}`, { noCache: true })); } catch { setLicenses([]); } };
 
   const loadUsers = async () => {
     setUsersLoading(true); setError(null);
     try {
-      const p = new URLSearchParams();
+      const p = new URLSearchParams({ tenant });
       if (filterStatus) p.append('status', filterStatus);
       if (filterLicense) p.append('license', filterLicense);
       if (search) p.append('search', search);
@@ -39,22 +46,26 @@ export default function Microsoft365() {
     }
   };
 
-  useEffect(() => { loadStatus(); loadLicenses(); loadUsers(); }, []);
-  useEffect(() => { loadUsers(); }, [filterStatus, filterLicense]);
+  // Trocar de tenant limpa os filtros (as licenças de um não existem no outro)
+  useEffect(() => { setFilterLicense(''); setFilterStatus(''); setSearch(''); setUsers([]); loadStatus(); loadLicenses(); }, [tenant]);
+  useEffect(() => { loadUsers(); }, [filterStatus, filterLicense, tenant]);
 
   const sync = async () => {
     setSyncing(true);
     try {
-      const res = await api.postForm('/microsoft365/sync', new FormData());
+      const res = await api.postForm(`/microsoft365/sync?${q}`, new FormData());
       showToast(res.message, true);
       await loadStatus(); await loadLicenses(); await loadUsers();
     } catch (e) {
-      showToast('Erro na sincronização. Verifique as credenciais no .env.', false);
+      showToast(e.message || 'Erro na sincronização. Verifique as credenciais no .env.', false);
     } finally {
       setSyncing(false);
     }
   };
 
+  const tenants = status?.tenants || [];
+  const tenantNome = tenants.find(t => t.id === tenant)?.nome || tenant;
+  const envKey = `MS_${tenant.toUpperCase()}_`;
   const uniqueLicenses = [...new Set(licenses.map(l => l.friendly_name))].filter(Boolean).sort();
 
   const renderLicenseBadges = (licStr) => {
@@ -71,13 +82,18 @@ export default function Microsoft365() {
       <ErrorBanner message={error} onRetry={loadUsers} />
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-        <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>Microsoft 365</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Gestão de acessos e licenças do tenant</p></div>
-        <button onClick={sync} disabled={syncing} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', background: 'var(--accent)', border: 'none', borderRadius: 'var(--radius)', color: '#fff', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', opacity: syncing ? 0.7 : 1 }}>{syncing ? <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}Revalidar</button>
+        <div><h1 style={{ fontWeight: 700, fontSize: '1.5rem', color: 'var(--text)' }}>Microsoft 365</h1><p style={{ color: 'var(--text2)', fontSize: '0.85rem', marginTop: 3 }}>Licenças adquiridas × atribuídas e contas do tenant <b>{tenantNome}</b></p></div>
+        <button onClick={sync} disabled={syncing} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', background: 'var(--accent)', border: 'none', borderRadius: 'var(--radius)', color: '#fff', fontWeight: 600, fontSize: '0.82rem', cursor: 'pointer', opacity: syncing ? 0.7 : 1 }}>{syncing ? <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}Revalidar {tenantNome}</button>
       </div>
+
+      {tenants.length > 1 && (
+        <Tabs label="Tenant" value={tenant} onChange={setTenant}
+              tabs={tenants.map(t => ({ value: t.id, label: t.nome, count: t.last_error ? '!' : undefined, tone: 'danger' }))} />
+      )}
 
       {!loading && status && !status.configured && (
         <div style={{ background: 'var(--red-bg)', border: '1px solid var(--red)', borderRadius: 'var(--radius-lg)', padding: '1rem 1.25rem', marginBottom: '1.25rem', color: 'var(--red)', fontSize: '0.85rem' }}>
-          ⚠ Credenciais do Microsoft Graph não configuradas. Preencha MS_TENANT_ID, MS_CLIENT_ID e MS_CLIENT_SECRET no .env.
+          ⚠ Credenciais do Microsoft Graph não configuradas para {tenantNome}. Preencha {tenant === 'comporte' ? 'MS_TENANT_ID, MS_CLIENT_ID e MS_CLIENT_SECRET' : `${envKey}TENANT_ID (e, se for outro app, ${envKey}CLIENT_ID e ${envKey}CLIENT_SECRET)`} no .env.
         </div>
       )}
 
@@ -110,9 +126,15 @@ export default function Microsoft365() {
             return (
               <div key={l.sku_id} className="card--interactive" style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.1rem', boxShadow: 'var(--shadow-sm)', borderTop: `3px solid ${color}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><BadgeCheck size={14} color="var(--blue-600)" /><span style={{ fontSize: '0.8rem', fontWeight: 600, lineHeight: 1.3 }}>{l.friendly_name}</span></div>
-                <div style={{ fontSize: '1.2rem', fontWeight: 700 }}><CountUp value={l.consumed} /> <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text3)' }}>/ {total}</span></div>
+                <div style={{ fontSize: '1.2rem', fontWeight: 700 }}><CountUp value={l.consumed} /> <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--text3)' }}>atribuídas de {total.toLocaleString('pt-BR')} adquiridas</span></div>
                 <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: '0.5rem', overflow: 'hidden' }}>
                   <div className="bar-fill" style={{ height: '100%', width: `${pct}%`, background: color }} />
+                </div>
+                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.45rem', fontSize: '0.7rem', color: 'var(--text3)' }}>
+                  <span>{(l.available ?? Math.max(0, total - l.consumed)).toLocaleString('pt-BR')} disponíveis</span>
+                  {l.consumed > total && <span style={{ color: 'var(--red)', fontWeight: 600 }}>{l.consumed - total} acima do adquirido</span>}
+                  {l.warning > 0 && <span style={{ color: 'var(--red)', fontWeight: 600 }} title="Assinatura vencida, em período de carência">{l.warning} vencendo</span>}
+                  {l.suspended > 0 && <span style={{ color: 'var(--red)', fontWeight: 600 }}>{l.suspended} suspensas</span>}
                 </div>
               </div>
             );
@@ -131,7 +153,7 @@ export default function Microsoft365() {
             {uniqueLicenses.map(l => <option key={l} value={l}>{l}</option>)}
           </select>
 
-          <button onClick={() => exportCSV(users, `microsoft365-${new Date().toISOString().slice(0, 10)}.csv`)} disabled={!users.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: users.length ? 1 : 0.5 }}><Download size={13} />CSV</button>
+          <button onClick={() => exportCSV(users, `microsoft365-${tenant}-${new Date().toISOString().slice(0, 10)}.csv`)} disabled={!users.length} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.55rem 0.85rem', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--text2)', fontSize: '0.78rem', cursor: 'pointer', opacity: users.length ? 1 : 0.5 }}><Download size={13} />CSV</button>
         </div>
         {!search && !filterStatus && !filterLicense && status?.total > 500 && (
           <div style={{ padding: '0.6rem 1.25rem', fontSize: '0.75rem', color: 'var(--text3)', background: 'var(--bg3)', borderBottom: '1px solid var(--border)' }}>
@@ -141,7 +163,7 @@ export default function Microsoft365() {
         <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
           <thead><tr style={{ background: 'var(--bg3)' }}>{['Email', 'Nome', 'Status', 'Licenças', 'Sincronizado em'].map(h => <th key={h} style={{ padding: '0.65rem 1rem', textAlign: 'left', color: 'var(--text2)', fontSize: '0.72rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.7, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
           <tbody>{usersLoading ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)' }}>Carregando...</td></tr> : users.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text3)', fontSize: '0.85rem' }}>{status?.total ? 'Nenhum utilizador encontrado' : 'Clique em "Revalidar" para procurar'}</td></tr> :
-            users.map((u) => <tr key={u.email} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+            users.map((u) => <tr key={`${tenant}:${u.email}`} style={{ borderTop: '1px solid var(--border)', transition: 'background 0.1s' }} onMouseEnter={e => e.currentTarget.style.background = 'var(--blue-50)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
               <td style={{ padding: '0.7rem 1rem', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text2)' }}>{u.email}</td>
               <td style={{ padding: '0.7rem 1rem', fontWeight: 500 }}>{u.name || '—'}</td>
               <td style={{ padding: '0.7rem 1rem' }}>{u.account_enabled ? <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 700, fontFamily: 'var(--font-mono)', background: 'var(--green-bg)', color: 'var(--green)' }}>Ativo</span> : <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.65rem', fontWeight: 700, fontFamily: 'var(--font-mono)', background: 'var(--bg3)', color: 'var(--text3)' }}>Desativado</span>}</td>

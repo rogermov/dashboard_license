@@ -43,9 +43,33 @@ function DocusignBlock({ ds }) {
   );
 }
 
-function M365Block({ list }) {
-  const [all, setAll] = useState(false);
+// Um bloco por tenant (Comporte, Holding Piracicabana…), cada um com adquiridas x atribuídas.
+function M365Block({ list, tenants }) {
   if (!list?.length) return <div className="small muted">Microsoft 365 sem dados. Rode o sync.</div>;
+  const groups = (tenants?.length ? tenants : [{ id: undefined, nome: '' }]).map(t => ({
+    ...t, items: list.filter(l => t.id === undefined || l.tenant === t.id),
+  }));
+  return (
+    <div className="stack" style={{ gap: 14 }}>
+      {groups.map(g => (
+        <div key={g.id || 'unico'} className="stack" style={{ gap: 8 }}>
+          {groups.length > 1 && (
+            <Link to={`/sistemas/m365?tenant=${g.id}`} className="row" style={{ justifyContent: 'space-between', textDecoration: 'none', color: 'var(--ink)' }}>
+              <span className="small" style={{ fontWeight: 600 }}>{g.nome}</span>
+              {g.last_error ? <Badge tone="danger">sync com erro</Badge>
+                : !g.configured ? <Badge tone="warning">não configurado</Badge>
+                : <span className="xs muted mono">{(g.atribuidas || 0).toLocaleString('pt-BR')} / {(g.adquiridas || 0).toLocaleString('pt-BR')}</span>}
+            </Link>
+          )}
+          {g.items.length ? <M365List list={g.items} /> : <div className="xs muted">Sem licenças pagas sincronizadas.</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function M365List({ list }) {
+  const [all, setAll] = useState(false);
   const shown = all ? list : list.slice(0, M365_LIMIT);
   return (
     <div className="stack" style={{ gap: 10 }}>
@@ -106,7 +130,7 @@ export default function LicenseHealth() {
       {!data ? <Skeleton rows={2} height={90} /> : (
         <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
           {col('DocuSign · Professional', 'var(--p-docusign)', <DocusignBlock ds={ds} />)}
-          {col('Microsoft 365 · licenças pagas', 'var(--p-365)', <M365Block list={data.m365} />)}
+          {col('Microsoft 365 · licenças pagas', 'var(--p-365)', <M365Block list={data.m365} tenants={data.m365_tenants} />)}
           {col('Google Workspace', 'var(--p-google)', <GoogleBlock g={data.google} />)}
         </div>
       )}

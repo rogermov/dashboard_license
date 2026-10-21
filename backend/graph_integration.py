@@ -101,6 +101,9 @@ def get_subscribed_skus(token: str) -> list:
 SKU_FRIENDLY_NAMES = {
     "SPE_E3": "Microsoft 365 E3",
     "SPE_E5": "Microsoft 365 E5",
+    "SPE_F1": "Microsoft 365 F3",
+    "M365_F1_COMM": "Microsoft 365 F1",
+    "Microsoft_Teams_Exploratory_Dept": "Teams Exploratory",
     "ENTERPRISEPACK": "Office 365 E3",
     "ENTERPRISEPREMIUM": "Office 365 E5",
     "ENTERPRISEWITHSCAL": "Office 365 E4",

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import sqlite3, pandas as pd, requests, io, re, os, unicodedata, json
+import sqlite3, pandas as pd, requests, io, re, os, unicodedata, json, secrets
 from typing import Optional
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -1917,3 +1917,94 @@ def licenses_health():
     finally:
         conn.close()
     return out
+
+# ─── Inventário de Licenças (artefato no claude.ai) ──────────────────────────
+# Monta o snapshot no formato que o artefato "Inventário de Licenças" lê
+# (inventario/atual + historico/<data>). Uma rotina diária busca este JSON e grava
+# no banco do artefato. Acesso por token (INVENTARIO_TOKEN), sem o Basic Auth do
+# painel: o nginx libera só este caminho.
+
+_MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto",
+             "setembro", "outubro", "novembro", "dezembro"]
+
+def _check_inventario_token(request: Request):
+    expected = os.getenv("INVENTARIO_TOKEN", "")
+    got = request.headers.get("x-inventario-token") or request.query_params.get("token") or ""
+    if not expected or not secrets.compare_digest(expected, got):
+        raise HTTPException(status_code=401, detail="Token inválido.")
+
+def _envios_mes_anterior(conn):
+    """Envelopes do mês anterior por conta + top 5 remetentes. Pesado (API do DocuSign):
+    calculado uma vez por mês e guardado em inventario_envios."""
+    hoje = datetime.now()
+    fim = hoje.replace(day=1) - timedelta(days=1)
+    ini = fim.replace(day=1)
+    periodo = f"{_MESES_PT[ini.month - 1]}/{ini.year}"
+    conn.execute("CREATE TABLE IF NOT EXISTS inventario_envios (periodo TEXT PRIMARY KEY, dados TEXT, gerado_em TEXT DEFAULT CURRENT_TIMESTAMP)")
+    row = conn.execute("SELECT dados FROM inventario_envios WHERE periodo=?", (periodo,)).fetchone()
+    if row:
+        return json.loads(row["dados"])
+    cfg = get_config()
+    token = get_jwt_token(cfg["integration_key"], cfg["user_id"], cfg["rsa_key_path"])
+    accounts = [a for a in cfg["accounts"] if a.get("id")]
+    with ThreadPoolExecutor(max_workers=max(1, len(accounts))) as pool:
+        res = list(pool.map(lambda a: get_envelopes_count(a, token, ini.strftime("%Y-%m-%d"), fim.strftime("%Y-%m-%d")), accounts))
+    unidades = []
+    for a, r in zip(accounts, res):
+        if r.get("error"):
+            raise Exception(f"Envelopes {a['name']}: {r['error']}")
+        unidades.append({"nome": a["name"], "total": r.get("total", 0),
+                         "top_remetentes": [{"nome": u.get("name") or u.get("email"), "envelopes": u.get("count", 0)}
+                                            for u in (r.get("users") or [])[:5]]})
+    dados = {"periodo": periodo, "total": sum(u["total"] for u in unidades),
+             "unidades": sorted(unidades, key=lambda u: -u["total"])}
+    conn.execute("INSERT OR REPLACE INTO inventario_envios (periodo, dados) VALUES (?, ?)", (periodo, json.dumps(dados)))
+    conn.commit()
+    return dados
+
+@app.get("/inventario/snapshot")
+def inventario_snapshot(request: Request):
+    _check_inventario_token(request)
+    agora = datetime.now().astimezone().isoformat(timespec="seconds")
+    health = licenses_health()
+    st = docusign_status()
+    conn = get_db()
+    try:
+        ds = health.get("docusign") or {}
+        contas = [{"nome": a.get("account_name"), "ativos": a.get("active", 0), "pendentes": a.get("pending", 0), "total": a.get("total", 0)}
+                  for a in (st.get("accounts") or [])]
+        try:
+            envios = _envios_mes_anterior(conn)
+        except Exception as e:
+            print(f"[inventario] envelopes: {e}")
+            envios = None
+        skus = [{"nome": l["name"], "usadas": l["consumed"], "total": l["total"], "office": l["office"]} for l in health.get("m365") or []]
+        plat = {r[0]: r[1] for r in conn.execute("SELECT platform, COUNT(*) FROM platform_users GROUP BY platform")}
+        g = health.get("google") or {}
+        outras = [{"id": "google", "nome": "Google Workspace", "contas": g.get("active", 0), "suspensas": g.get("suspended", 0)}]
+        for pid, nome in (("jira", "Jira"), ("bitbucket", "Bitbucket"), ("lucid", "Lucid")):
+            if plat.get(pid):
+                outras.append({"id": pid, "nome": nome, "contas": plat[pid]})
+        last_sync = conn.execute("SELECT synced_at FROM ms365_sync_log WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    snap = {
+        "schema_version": 2,
+        "gerado_em": agora,
+        "plataformas_sincronizadas_em": to_brt(last_sync[0]) if last_sync and last_sync[0] else agora,
+        "sincronizacao": {"atualizado_em": agora, "intervalo_horas": 24, "status": "ok",
+                          "origem": "servidor AccessGuard (rotina diária)"},
+        "docusign": {"licencas": {"plano": "Professional", "total": ds.get("seats"), "usadas": ds.get("professional", 0)},
+                     "gaps_licenca": ds.get("gaps", 0), "contas": contas, **({"envios": envios} if envios else {})},
+        "m365": {"sku_principal": "Microsoft 365 Business Standard", "limite_minimo": 1, "skus": skus,
+                 "sem_alerta": True},   # no M365 100% de uso é normal: o artefato não alerta
+        "outras_plataformas": outras,
+    }
+    historico = {
+        "data": datetime.now().strftime("%Y-%m-%d"),
+        "docusign": {"usadas": ds.get("professional", 0), "total": ds.get("seats"), "gaps": ds.get("gaps", 0)},
+        "m365": [{"nome": s["nome"], "usadas": s["usadas"], "total": s["total"]} for s in skus],
+        "outras": [{"id": o["id"], "contas": o["contas"]} for o in outras],
+        **({"envelopes_total": envios["total"], "unidades": [{"nome": u["nome"], "total": u["total"]} for u in envios["unidades"]]} if envios else {}),
+    }
+    return {"atual": snap, "historico": historico}

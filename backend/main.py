@@ -15,7 +15,7 @@ def to_brt(utc_str):
         return utc_str
 
 from docusign_integration import get_config, get_jwt_token, get_users_for_account, get_envelopes_count, generate_admin_consent_url, get_included_seats, sync_real_licenses
-from graph_integration import get_config as get_graph_config, get_graph_token, get_users as get_graph_users, get_subscribed_skus, sku_friendly_name
+from graph_integration import get_config as get_graph_config, get_graph_token, get_users as get_graph_users, get_subscribed_skus, sku_friendly_name, get_tenants as get_m365_tenants, get_tenant as get_m365_tenant, PRIMARY_TENANT as M365_PRIMARY
 from pydantic import BaseModel
 import offboarding
 
@@ -127,6 +127,23 @@ def init_db():
         total INTEGER DEFAULT 0, consumed INTEGER DEFAULT 0, synced_at TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS ms365_sync_log (
         id INTEGER PRIMARY KEY CHECK (id=1), synced_at TEXT, error TEXT)""")
+    # Multi-tenant M365. ms365_users continua sendo SÓ o tenant principal (offboarding);
+    # os outros tenants ficam em ms365_tenant_users. Licenças e log de sync por tenant.
+    c.execute("""CREATE TABLE IF NOT EXISTS ms365_tenant_users (
+        tenant TEXT NOT NULL, email TEXT NOT NULL, name TEXT, upn TEXT, account_enabled INTEGER,
+        licenses TEXT, job_title TEXT, imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(tenant, email))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ms365_skus (
+        tenant TEXT NOT NULL, sku_id TEXT NOT NULL, sku_part_number TEXT, friendly_name TEXT,
+        total INTEGER DEFAULT 0, consumed INTEGER DEFAULT 0, suspended INTEGER DEFAULT 0,
+        warning INTEGER DEFAULT 0, capability TEXT, synced_at TEXT, PRIMARY KEY(tenant, sku_id))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ms365_tenant_sync (
+        tenant TEXT PRIMARY KEY, synced_at TEXT, error TEXT, users INTEGER, paid INTEGER)""")
+    # Migração (idempotente): dados antigos de tabela única = tenant principal
+    c.execute("""INSERT OR IGNORE INTO ms365_skus (tenant, sku_id, sku_part_number, friendly_name, total, consumed, synced_at)
+        SELECT 'comporte', sku_id, sku_part_number, friendly_name, total, consumed, synced_at FROM ms365_licenses""")
+    c.execute("""INSERT OR IGNORE INTO ms365_tenant_sync (tenant, synced_at, error)
+        SELECT 'comporte', synced_at, error FROM ms365_sync_log WHERE id=1""")
     c.execute("""CREATE TABLE IF NOT EXISTS docusign_license_import (
         account_id TEXT NOT NULL, email TEXT NOT NULL, license_type TEXT, status TEXT,
         imported_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(account_id, email))""")
@@ -490,7 +507,7 @@ async def preview_csv(file: UploadFile=File(...), platform: str=Form(default="36
 @app.delete("/data/reset")
 def reset_all():
     conn = get_db(); c = conn.cursor()
-    for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log","docusign_license_import","ms365_users","ms365_licenses","ms365_sync_log","hr_terminations","offboarding_matches","offboarding_decisions"]:
+    for t in ["terminated_users","platform_users","azure_users","import_logs","docusign_users","docusign_sync_log","docusign_license_import","ms365_users","ms365_licenses","ms365_sync_log","ms365_tenant_users","ms365_skus","ms365_tenant_sync","hr_terminations","offboarding_matches","offboarding_decisions"]:
         c.execute(f"DELETE FROM {t}")
     conn.commit(); conn.close()
     return {"message":"Banco limpo."}
@@ -836,38 +853,68 @@ def google_users(status: str = "", search: str = ""):
 
 # ─── MICROSOFT 365 / ENTRA ID ENDPOINTS ───────────────────────────────────────
 
+def _m365_tenant_or_404(tenant: str) -> dict:
+    try:
+        return get_m365_tenant(tenant)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Tenant '{tenant}' não configurado (MS_EXTRA_TENANTS no .env).")
+
+def _m365_users_table(tenant: str):
+    """(tabela, filtro, parâmetros): o principal fica em ms365_users (usado no offboarding)."""
+    if tenant == M365_PRIMARY:
+        return "ms365_users", "1=1", []
+    return "ms365_tenant_users", "tenant=?", [tenant]
+
+def _m365_tenant_stats(conn, t) -> dict:
+    table, where, params = _m365_users_table(t["id"])
+    log = conn.execute("SELECT * FROM ms365_tenant_sync WHERE tenant=?", (t["id"],)).fetchone()
+    cnt = {r[0]: r[1] for r in conn.execute(f"SELECT account_enabled, COUNT(*) FROM {table} WHERE {where} GROUP BY account_enabled", params)}
+    active, disabled = cnt.get(1, 0), cnt.get(0, 0)
+    return {"id": t["id"], "nome": t["nome"], "configured": t["configured"], "principal": t["id"] == M365_PRIMARY,
+            "last_sync": to_brt(log["synced_at"]) if log and log["synced_at"] else None,
+            "last_error": log["error"] if log else None,
+            "active": active, "disabled": disabled, "total": active + disabled}
+
 @app.get("/microsoft365/status")
-def microsoft365_status():
+def microsoft365_status(tenant: str = M365_PRIMARY):
+    """Status do tenant pedido (campos no topo, compatível) + lista de todos os tenants."""
+    sel = _m365_tenant_or_404(tenant)
     conn = get_db()
     try:
-        c = conn.cursor()
-        log = c.execute("SELECT * FROM ms365_sync_log WHERE id=1").fetchone()
-        active = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=1").fetchone()[0]
-        disabled = c.execute("SELECT COUNT(*) FROM ms365_users WHERE account_enabled=0").fetchone()[0]
+        tenants = [_m365_tenant_stats(conn, t) for t in get_m365_tenants()]
     finally:
         conn.close()
-    return {
-        "last_sync": to_brt(log["synced_at"]) if log else None,
-        "last_error": log["error"] if log else None,
-        "active": active, "disabled": disabled, "total": active + disabled,
-        "configured": bool(get_graph_config()["tenant_id"]),
-    }
+    cur = next(x for x in tenants if x["id"] == sel["id"])
+    return {**cur, "tenant": cur["id"], "tenants": tenants}
+
+def _sku_row(r) -> dict:
+    d = dict(r)
+    d["available"] = max(0, (d.get("total") or 0) - (d.get("consumed") or 0))
+    return d
 
 @app.get("/microsoft365/licenses")
-def microsoft365_licenses():
+def microsoft365_licenses(tenant: str = M365_PRIMARY):
+    """SKUs do tenant: adquiridas (total) x atribuídas (consumed) x disponíveis.
+    tenant=todos devolve todos os tenants, com o campo tenant."""
     conn = get_db()
     try:
-        rows = conn.execute("SELECT * FROM ms365_licenses ORDER BY total DESC").fetchall()
-        return [dict(r) for r in rows]
+        if tenant == "todos":
+            rows = conn.execute("SELECT * FROM ms365_skus ORDER BY tenant, total DESC").fetchall()
+        else:
+            _m365_tenant_or_404(tenant)
+            rows = conn.execute("SELECT * FROM ms365_skus WHERE tenant=? ORDER BY total DESC", (tenant,)).fetchall()
+        return [_sku_row(r) for r in rows]
     finally:
         conn.close()
 
 @app.get("/microsoft365/users")
-def microsoft365_users(status: str = "", search: str = "", license: str = ""):
+def microsoft365_users(status: str = "", search: str = "", license: str = "", tenant: str = M365_PRIMARY):
+    _m365_tenant_or_404(tenant)
+    table, where, params = _m365_users_table(tenant)
     conn = get_db()
     try:
-        query = "SELECT * FROM ms365_users WHERE 1=1"
-        params = []
+        query = f"SELECT * FROM {table} WHERE {where}"
+        params = list(params)
         if status: query += " AND account_enabled=?"; params.append(1 if status == "active" else 0)
         if search: query += " AND (LOWER(email) LIKE ? OR LOWER(name) LIKE ?)"; params.extend([f"%{search.lower()}%", f"%{search.lower()}%"])
         if license: query += " AND licenses LIKE ?"; params.append(f"%{license}%")
@@ -875,81 +922,123 @@ def microsoft365_users(status: str = "", search: str = "", license: str = ""):
         # Tenant tem ~47k contas (a maioria sem licença); sem busca/filtro, limita para não travar a tabela no navegador
         if not search and not status and not license: query += " LIMIT 500"
         rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        return [{**dict(r), "tenant": tenant} for r in rows]
     finally:
         conn.close()
+
+def _sync_m365_tenant(conn, t) -> tuple:
+    """Baixa usuários e SKUs de um tenant. Devolve (usuários, com licença paga, reativadas)."""
+    token = get_graph_token(t["tenant_id"], t["client_id"], t["client_secret"])
+    skus = get_subscribed_skus(token)
+    sku_part_by_id = {s["skuId"]: s["skuPartNumber"] for s in skus}
+    users = get_graph_users(token)
+    primary = t["id"] == M365_PRIMARY
+
+    if primary:
+        conn.execute("DELETE FROM ms365_users")
+        conn.execute("DELETE FROM platform_users WHERE platform='365'")
+    else:
+        conn.execute("DELETE FROM ms365_tenant_users WHERE tenant=?", (t["id"],))
+
+    count = 0
+    for u in users:
+        email = normalize_email(u.get("mail") or u.get("userPrincipalName") or "")
+        if not email: continue
+        name = u.get("displayName") or ""
+        enabled = 1 if u.get("accountEnabled") else 0
+        part_numbers = [sku_part_by_id.get(a["skuId"], a["skuId"]) for a in (u.get("assignedLicenses") or [])]
+        friendly = [sku_friendly_name(p) for p in part_numbers]
+        paid = enabled and has_paid_license(part_numbers)
+        count += 1 if paid else 0
+
+        if not primary:
+            conn.execute("""INSERT INTO ms365_tenant_users (tenant, email, name, upn, account_enabled, licenses, job_title)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant, email) DO UPDATE SET name=excluded.name, upn=excluded.upn,
+                account_enabled=excluded.account_enabled, licenses=excluded.licenses, job_title=excluded.job_title,
+                imported_at=CURRENT_TIMESTAMP""",
+                (t["id"], email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), (u.get("jobTitle") or "").strip()))
+            continue
+
+        emp_id = (u.get("employeeId") or "").strip()
+        aliases = sorted({p.split(":", 1)[1].lower() for p in (u.get("proxyAddresses") or []) if p.lower().startswith("smtp:")}
+                         | {m.lower() for m in (u.get("otherMails") or []) if m})
+        conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases, on_prem, job_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
+            licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases,
+            on_prem=excluded.on_prem, job_title=excluded.job_title, imported_at=CURRENT_TIMESTAMP""",
+            (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases),
+             1 if u.get("onPremisesSyncEnabled") else 0, (u.get("jobTitle") or "").strip()))
+        if paid:
+            conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
+                ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP""",
+                (email, name))
+
+    # prepaidUnits.enabled = adquiridas e ativas; warning = vencidas em carência; suspended = bloqueadas
+    conn.execute("DELETE FROM ms365_skus WHERE tenant=?", (t["id"],))
+    for s in skus:
+        part_number = s["skuPartNumber"]
+        pre = s.get("prepaidUnits") or {}
+        conn.execute("""INSERT INTO ms365_skus (tenant, sku_id, sku_part_number, friendly_name, total, consumed,
+            suspended, warning, capability, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (t["id"], s["skuId"], part_number, sku_friendly_name(part_number), pre.get("enabled", 0),
+             s.get("consumedUnits", 0), pre.get("suspended", 0), pre.get("warning", 0), s.get("capabilityStatus")))
+    if primary:   # tabela antiga, mantida para quem ainda lê dela
+        conn.execute("DELETE FROM ms365_licenses")
+        conn.execute("""INSERT INTO ms365_licenses (sku_id, sku_part_number, friendly_name, total, consumed, synced_at)
+            SELECT sku_id, sku_part_number, friendly_name, total, consumed, synced_at FROM ms365_skus WHERE tenant=?""", (t["id"],))
+        conn.execute("""INSERT INTO ms365_sync_log (id, synced_at, error) VALUES (1, CURRENT_TIMESTAMP, NULL)
+            ON CONFLICT(id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL""")
+
+    conn.execute("""INSERT INTO ms365_tenant_sync (tenant, synced_at, error, users, paid) VALUES (?, CURRENT_TIMESTAMP, NULL, ?, ?)
+        ON CONFLICT(tenant) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL, users=excluded.users, paid=excluded.paid""",
+        (t["id"], len(users), count))
+    revertidas = _reconcile_m365_actions(conn) if primary else 0
+    return len(users), count, revertidas
 
 @app.post("/microsoft365/sync")
 @serialized_sync
-def microsoft365_sync():
-    config = get_graph_config()
-    if not config["tenant_id"] or not config["client_id"] or not config["client_secret"]:
+def microsoft365_sync(tenant: str = ""):
+    """Sincroniza um tenant (?tenant=chave) ou todos os configurados. Um tenant com erro
+    não impede os outros: só dá 500 se nenhum sincronizar."""
+    alvos = [_m365_tenant_or_404(tenant)] if tenant else [t for t in get_m365_tenants() if t["configured"]]
+    if not alvos or not all(t["configured"] for t in alvos):
         raise HTTPException(status_code=400, detail="Credenciais do Microsoft Graph não configuradas no .env")
 
+    partes, erros, ok_primary = [], [], False
     conn = get_db()
     try:
-        token = get_graph_token(config["tenant_id"], config["client_id"], config["client_secret"])
-        skus = get_subscribed_skus(token)
-        sku_part_by_id = {s["skuId"]: s["skuPartNumber"] for s in skus}
-
-        users = get_graph_users(token)
-
-        conn.execute("DELETE FROM ms365_users")
-        conn.execute("DELETE FROM platform_users WHERE platform='365'")
-
-        count = 0
-        for u in users:
-            email = normalize_email(u.get("mail") or u.get("userPrincipalName") or "")
-            if not email: continue
-            name = u.get("displayName") or ""
-            enabled = 1 if u.get("accountEnabled") else 0
-            part_numbers = [sku_part_by_id.get(a["skuId"], a["skuId"]) for a in (u.get("assignedLicenses") or [])]
-            friendly = [sku_friendly_name(p) for p in part_numbers]
-
-            emp_id = (u.get("employeeId") or "").strip()
-            aliases = sorted({p.split(":", 1)[1].lower() for p in (u.get("proxyAddresses") or []) if p.lower().startswith("smtp:")}
-                             | {m.lower() for m in (u.get("otherMails") or []) if m})
-            conn.execute("""INSERT INTO ms365_users (email, name, upn, account_enabled, licenses, employee_id, aliases, on_prem, job_title)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(email) DO UPDATE SET name=excluded.name, upn=excluded.upn, account_enabled=excluded.account_enabled,
-                licenses=excluded.licenses, employee_id=excluded.employee_id, aliases=excluded.aliases,
-                on_prem=excluded.on_prem, job_title=excluded.job_title, imported_at=CURRENT_TIMESTAMP""",
-                (email, name, u.get("userPrincipalName"), enabled, ";".join(friendly), emp_id, ";".join(aliases),
-                 1 if u.get("onPremisesSyncEnabled") else 0, (u.get("jobTitle") or "").strip()))
-
-            if enabled and has_paid_license(part_numbers):
-                conn.execute("""INSERT INTO platform_users (email, platform, display_name) VALUES (?, '365', ?)
-                    ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP""",
-                    (email, name))
-                count += 1
-
-        conn.execute("DELETE FROM ms365_licenses")
-        for s in skus:
-            part_number = s["skuPartNumber"]
-            conn.execute("""INSERT INTO ms365_licenses (sku_id, sku_part_number, friendly_name, total, consumed, synced_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (s["skuId"], part_number, sku_friendly_name(part_number),
-                 s.get("prepaidUnits", {}).get("enabled", 0), s.get("consumedUnits", 0)))
-
-        conn.execute("""INSERT INTO ms365_sync_log (id, synced_at, error) VALUES (1, CURRENT_TIMESTAMP, NULL)
-            ON CONFLICT(id) DO UPDATE SET synced_at=CURRENT_TIMESTAMP, error=NULL""")
-        revertidas = _reconcile_m365_actions(conn)
-        conn.commit()
-        _safe_rebuild_offboarding()
-        aviso = f" ⚠ {revertidas} conta(s) desativada(s) pelo painel voltaram a ficar ativas (ver Histórico)." if revertidas else ""
-        return {"message": f"Microsoft 365 sincronizado! {len(users)} usuários processados, {count} com licença paga.{aviso}"}
-    except Exception as e:
-        print(f"Erro no microsoft365_sync: {e}")
-        try:   # registrar o erro não pode gerar um segundo erro (ex.: banco ocupado)
-            conn.rollback()
-            conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
-                ON CONFLICT(id) DO UPDATE SET error=?""", (str(e), str(e)))
-            conn.commit()
-        except sqlite3.Error:
-            pass
-        raise HTTPException(status_code=500, detail=f"Falha ao sincronizar o Microsoft 365: {str(e)[:300]}")
+        for t in alvos:
+            try:
+                n_users, n_paid, revertidas = _sync_m365_tenant(conn, t)
+                conn.commit()
+                ok_primary = ok_primary or t["id"] == M365_PRIMARY
+                aviso = f" ⚠ {revertidas} conta(s) desativada(s) pelo painel voltaram a ficar ativas (ver Histórico)." if revertidas else ""
+                partes.append(f"{t['nome']}: {n_users} usuários, {n_paid} com licença paga.{aviso}")
+            except Exception as e:
+                print(f"Erro no microsoft365_sync ({t['id']}): {e}")
+                erros.append(f"{t['nome']}: {str(e)[:250]}")
+                try:   # registrar o erro não pode gerar um segundo erro (ex.: banco ocupado)
+                    conn.rollback()
+                    conn.execute("""INSERT INTO ms365_tenant_sync (tenant, error) VALUES (?, ?)
+                        ON CONFLICT(tenant) DO UPDATE SET error=excluded.error""", (t["id"], str(e)))
+                    if t["id"] == M365_PRIMARY:
+                        conn.execute("""INSERT INTO ms365_sync_log (id, error) VALUES (1, ?)
+                            ON CONFLICT(id) DO UPDATE SET error=?""", (str(e), str(e)))
+                    conn.commit()
+                except sqlite3.Error:
+                    pass
     finally:
         conn.close()
+    if ok_primary:
+        _safe_rebuild_offboarding()
+    if not partes:
+        raise HTTPException(status_code=500, detail="Falha ao sincronizar o Microsoft 365 — " + " | ".join(erros))
+    msg = "Microsoft 365 sincronizado! " + " ".join(partes)
+    if erros:
+        msg += " ⚠ Falhou: " + " | ".join(erros)
+    return {"message": msg, "erros": erros}
 
 # ─── ALERTAS DE LICENÇA (Google Chat) ──────────────────────────────────────────
 
@@ -974,10 +1063,11 @@ def _license_alerts(conn):
     # Microsoft 365: desligado por padrão (o pedido foi receber só limites do DocuSign).
     # Ative com ALERT_INCLUDE_M365=true. SKUs com tamanho relevante (>=5 assentos).
     if os.getenv("ALERT_INCLUDE_M365", "false").lower() == "true":
-        for r in conn.execute("SELECT friendly_name, total, consumed FROM ms365_licenses WHERE total>=5 AND total<1000000").fetchall():
+        nomes = {t["id"]: t["nome"] for t in get_m365_tenants()}
+        for r in conn.execute("SELECT tenant, friendly_name, total, consumed FROM ms365_skus WHERE total>=5 AND total<1000000").fetchall():
             if r["consumed"] >= r["total"] * threshold:
                 extra = f" — ACIMA em {r['consumed'] - r['total']}" if r["consumed"] > r["total"] else ""
-                alerts.append(f"*M365 — {r['friendly_name']}:* {r['consumed']}/{r['total']}{extra}")
+                alerts.append(f"*M365 {nomes.get(r['tenant'], r['tenant'])} — {r['friendly_name']}:* {r['consumed']}/{r['total']}{extra}")
     return alerts
 
 @app.get("/alerts/license-status")
@@ -1894,7 +1984,7 @@ def docusign_gaps_fix(req: GapFixRequest, request: Request):
 def licenses_health():
     """Resumo por sistema. Só o DocuSign Professional tem alerta (contrato por assento);
     no M365 100% de uso é normal, então só mostramos uso/total das licenças PAGAS."""
-    out = {"docusign": None, "m365": [], "google": None}
+    out = {"docusign": None, "m365": [], "m365_tenants": [], "google": None}
     try:
         st = docusign_status()
         ls = st.get("license_summary") or {}
@@ -1904,11 +1994,24 @@ def licenses_health():
         print(f"[licenses/health] docusign: {e}")
     conn = get_db()
     try:
-        rows = conn.execute("SELECT friendly_name, consumed, total FROM ms365_licenses").fetchall()
+        tenants = get_m365_tenants()
+        nomes = {t["id"]: t["nome"] for t in tenants}
+        rows = conn.execute("SELECT tenant, friendly_name, consumed, total, warning, suspended FROM ms365_skus").fetchall()
         # SKUs "ilimitados" (10 mil+) são gratuitos/automáticos da Microsoft
-        paid = [{"name": r["friendly_name"], "consumed": r["consumed"], "total": r["total"], "office": _is_office(r["friendly_name"])}
+        paid = [{"tenant": r["tenant"], "tenant_nome": nomes.get(r["tenant"], r["tenant"]),
+                 "name": r["friendly_name"], "consumed": r["consumed"], "total": r["total"],
+                 "available": max(0, r["total"] - r["consumed"]), "warning": r["warning"] or 0,
+                 "suspended": r["suspended"] or 0, "office": _is_office(r["friendly_name"])}
                 for r in rows if r["total"] and r["total"] < 10000 and _is_paid_m365(r["friendly_name"])]
-        out["m365"] = sorted(paid, key=lambda x: (not x["office"], -x["total"]))
+        ordem = {t["id"]: i for i, t in enumerate(tenants)}
+        out["m365"] = sorted(paid, key=lambda x: (ordem.get(x["tenant"], 99), not x["office"], -x["total"]))
+        for t in tenants:
+            st = _m365_tenant_stats(conn, t)
+            mine = [l for l in paid if l["tenant"] == t["id"]]
+            out["m365_tenants"].append({"id": t["id"], "nome": t["nome"], "configured": t["configured"],
+                                        "last_sync": st["last_sync"], "last_error": st["last_error"],
+                                        "adquiridas": sum(l["total"] for l in mine),
+                                        "atribuidas": sum(l["consumed"] for l in mine)})
         try:
             g = {r[0]: r[1] for r in conn.execute("SELECT status, COUNT(*) FROM google_users GROUP BY status")}
             out["google"] = {"active": g.get("active", 0), "suspended": g.get("suspended", 0), "total": sum(g.values())}
@@ -1978,32 +2081,40 @@ def inventario_snapshot(request: Request):
         except Exception as e:
             print(f"[inventario] envelopes: {e}")
             envios = None
-        skus = [{"nome": l["name"], "usadas": l["consumed"], "total": l["total"], "office": l["office"]} for l in health.get("m365") or []]
+        skus = [{"tenant": l["tenant"], "nome": l["name"], "usadas": l["consumed"], "total": l["total"],
+                 "disponiveis": l["available"], "aviso": l["warning"], "suspensas": l["suspended"], "office": l["office"]}
+                for l in health.get("m365") or []]
+        m365_tenants = [{"id": t["id"], "nome": t["nome"], "sincronizado_em": t["last_sync"],
+                         "erro": (t["last_error"] or "")[:200] or None, "configurado": t["configured"],
+                         "adquiridas": t["adquiridas"], "atribuidas": t["atribuidas"]}
+                        for t in health.get("m365_tenants") or []]
         plat = {r[0]: r[1] for r in conn.execute("SELECT platform, COUNT(*) FROM platform_users GROUP BY platform")}
         g = health.get("google") or {}
         outras = [{"id": "google", "nome": "Google Workspace", "contas": g.get("active", 0), "suspensas": g.get("suspended", 0)}]
         for pid, nome in (("jira", "Jira"), ("bitbucket", "Bitbucket"), ("lucid", "Lucid")):
             if plat.get(pid):
                 outras.append({"id": pid, "nome": nome, "contas": plat[pid]})
-        last_sync = conn.execute("SELECT synced_at FROM ms365_sync_log WHERE id=1").fetchone()
+        last_sync = conn.execute("SELECT synced_at FROM ms365_tenant_sync WHERE tenant=?", (M365_PRIMARY,)).fetchone()
     finally:
         conn.close()
     snap = {
-        "schema_version": 2,
+        "schema_version": 3,
         "gerado_em": agora,
         "plataformas_sincronizadas_em": to_brt(last_sync[0]) if last_sync and last_sync[0] else agora,
         "sincronizacao": {"atualizado_em": agora, "intervalo_horas": 24, "status": "ok",
                           "origem": "servidor AccessGuard (rotina diária)"},
         "docusign": {"licencas": {"plano": "Professional", "total": ds.get("seats"), "usadas": ds.get("professional", 0)},
                      "gaps_licenca": ds.get("gaps", 0), "contas": contas, **({"envios": envios} if envios else {})},
-        "m365": {"sku_principal": "Microsoft 365 Business Standard", "limite_minimo": 1, "skus": skus,
+        # skus: todos os tenants, cada um com "tenant". tenants: resumo por tenant (adquiridas x atribuídas)
+        "m365": {"sku_principal": "Microsoft 365 Business Standard", "tenant_principal": M365_PRIMARY,
+                 "limite_minimo": 1, "skus": skus, "tenants": m365_tenants,
                  "sem_alerta": True},   # no M365 100% de uso é normal: o artefato não alerta
         "outras_plataformas": outras,
     }
     historico = {
         "data": datetime.now().strftime("%Y-%m-%d"),
         "docusign": {"usadas": ds.get("professional", 0), "total": ds.get("seats"), "gaps": ds.get("gaps", 0)},
-        "m365": [{"nome": s["nome"], "usadas": s["usadas"], "total": s["total"]} for s in skus],
+        "m365": [{"tenant": s["tenant"], "nome": s["nome"], "usadas": s["usadas"], "total": s["total"]} for s in skus],
         "outras": [{"id": o["id"], "contas": o["contas"]} for o in outras],
         **({"envelopes_total": envios["total"], "unidades": [{"nome": u["nome"], "total": u["total"]} for u in envios["unidades"]]} if envios else {}),
     }

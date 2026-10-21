@@ -16,6 +16,40 @@ def get_config():
         "client_secret": os.getenv("MS_CLIENT_SECRET", ""),
     }
 
+# Tenant principal (Comporte): é o único usado no offboarding (desativar contas).
+PRIMARY_TENANT = "comporte"
+
+def get_tenants() -> list:
+    """Tenants M365 que o painel lê. O principal vem de MS_TENANT_ID/MS_CLIENT_*.
+    Os demais vêm de MS_EXTRA_TENANTS=chave1,chave2 e, para cada chave:
+      MS_<CHAVE>_NAME, MS_<CHAVE>_TENANT_ID e, se for outro App Registration,
+      MS_<CHAVE>_CLIENT_ID / MS_<CHAVE>_CLIENT_SECRET (sem eles, usa o app principal,
+      que precisa ser multilocatário e ter consentimento de admin no outro tenant)."""
+    base = get_config()
+    tenants = [{"id": PRIMARY_TENANT, "nome": os.getenv("MS_TENANT_NAME", "Comporte"), **base}]
+    for key in os.getenv("MS_EXTRA_TENANTS", "").split(","):
+        key = key.strip().lower()
+        if not key or key == PRIMARY_TENANT:
+            continue
+        p = f"MS_{key.upper()}_"
+        own_client = os.getenv(p + "CLIENT_ID", "")
+        tenants.append({
+            "id": key,
+            "nome": os.getenv(p + "NAME", key),
+            "tenant_id": os.getenv(p + "TENANT_ID", ""),
+            "client_id": own_client or base["client_id"],
+            "client_secret": os.getenv(p + "CLIENT_SECRET", "") if own_client else base["client_secret"],
+        })
+    for t in tenants:
+        t["configured"] = bool(t["tenant_id"] and t["client_id"] and t["client_secret"])
+    return tenants
+
+def get_tenant(tenant_id_key: str) -> dict:
+    t = next((t for t in get_tenants() if t["id"] == (tenant_id_key or PRIMARY_TENANT)), None)
+    if not t:
+        raise KeyError(tenant_id_key)
+    return t
+
 def get_graph_token(tenant_id: str, client_id: str, client_secret: str) -> str:
     cache_key = f"{tenant_id}:{client_id}"
     cached = _token_cache.get(cache_key)
@@ -67,6 +101,9 @@ def get_subscribed_skus(token: str) -> list:
 SKU_FRIENDLY_NAMES = {
     "SPE_E3": "Microsoft 365 E3",
     "SPE_E5": "Microsoft 365 E5",
+    "SPE_F1": "Microsoft 365 F3",
+    "M365_F1_COMM": "Microsoft 365 F1",
+    "Microsoft_Teams_Exploratory_Dept": "Teams Exploratory",
     "ENTERPRISEPACK": "Office 365 E3",
     "ENTERPRISEPREMIUM": "Office 365 E5",
     "ENTERPRISEWITHSCAL": "Office 365 E4",

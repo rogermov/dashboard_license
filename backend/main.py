@@ -1979,6 +1979,69 @@ def docusign_gaps_fix(req: GapFixRequest, request: Request):
             "protegidos": sum(r["status"] == "bloqueado" for r in results)}
 
 
+# ─── Licenças M365 por empresa (domínio do e-mail) ───────────────────────────
+def _m365_empresas(conn) -> list:
+    """Licenças PAGAS atribuídas a contas ATIVAS, agrupadas por empresa. A empresa vem do
+    domínio do e-mail (company_domains.json); domínio do grupo = 'Grupo Comporte (corporativo)';
+    domínio *.onmicrosoft.com de um tenant extra = o próprio tenant; fora do mapa = o domínio."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "company_domains.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        raw = {}
+    nomes = raw.get("nomes", {})
+    dom_emp = {d.lower(): k for k, v in raw.get("empresas", {}).items() for d in v}
+    grupo = {d.lower() for d in raw.get("grupo", [])}
+    tenants = {t["id"]: t["nome"] for t in get_m365_tenants()}
+    paid = {(r["tenant"], r["friendly_name"]) for r in conn.execute("SELECT tenant, friendly_name, total FROM ms365_skus")
+            if r["total"] and r["total"] < 10000 and _is_paid_m365(r["friendly_name"])}
+
+    def empresa_de(dom, tenant):
+        if dom in dom_emp:
+            k = dom_emp[dom]
+            return k, nomes.get(k) or k.title(), True
+        if dom in grupo:
+            return "grupo", "Grupo Comporte (corporativo)", True
+        if dom.endswith(".onmicrosoft.com") and tenant != M365_PRIMARY:
+            return "tenant:" + tenant, tenants.get(tenant, tenant), True
+        return "dom:" + dom, dom, False
+
+    rows = [(M365_PRIMARY, r) for r in conn.execute(
+        "SELECT email, upn, licenses FROM ms365_users WHERE account_enabled=1 AND COALESCE(licenses,'')!=''")]
+    rows += [(r["tenant"], r) for r in conn.execute(
+        "SELECT tenant, email, upn, licenses FROM ms365_tenant_users WHERE account_enabled=1 AND COALESCE(licenses,'')!=''")]
+    agg = {}
+    for tenant, r in rows:
+        lic = [l for l in (r["licenses"] or "").split(";") if (tenant, l) in paid]
+        if not lic:
+            continue
+        dom = (r["email"] or "").rsplit("@", 1)[-1].lower()
+        key, nome, mapeada = empresa_de(dom, tenant)
+        e = agg.setdefault(key, {"id": key, "nome": nome, "mapeada": mapeada, "dominios": set(), "tenants": set(),
+                                 "contas": 0, "licencas": 0, "skus": {}, "convidados": 0})
+        e["dominios"].add(dom); e["tenants"].add(tenant)
+        e["contas"] += 1; e["licencas"] += len(lic)
+        if "#ext#" in (r["upn"] or "").lower():
+            e["convidados"] += 1
+        for l in lic:
+            k = (tenant, l)
+            e["skus"][k] = e["skus"].get(k, 0) + 1
+    out = []
+    for e in agg.values():
+        out.append({**e, "dominios": sorted(e["dominios"]), "tenants": sorted(e["tenants"]),
+                    "skus": sorted(({"tenant": t, "nome": n, "contas": c} for (t, n), c in e["skus"].items()),
+                                   key=lambda x: -x["contas"])})
+    return sorted(out, key=lambda x: (-x["licencas"], x["nome"]))
+
+@app.get("/microsoft365/empresas")
+def microsoft365_empresas():
+    conn = get_db()
+    try:
+        return _m365_empresas(conn)
+    finally:
+        conn.close()
+
 # ─── Saúde de licenças (card da Visão geral) ─────────────────────────────────
 @app.get("/licenses/health")
 def licenses_health():
@@ -2095,6 +2158,11 @@ def inventario_snapshot(request: Request):
             if plat.get(pid):
                 outras.append({"id": pid, "nome": nome, "contas": plat[pid]})
         last_sync = conn.execute("SELECT synced_at FROM ms365_tenant_sync WHERE tenant=?", (M365_PRIMARY,)).fetchone()
+        try:
+            empresas = _m365_empresas(conn)
+        except Exception as e:
+            print(f"[inventario] empresas: {e}")
+            empresas = []
     finally:
         conn.close()
     snap = {
@@ -2107,7 +2175,7 @@ def inventario_snapshot(request: Request):
                      "gaps_licenca": ds.get("gaps", 0), "contas": contas, **({"envios": envios} if envios else {})},
         # skus: todos os tenants, cada um com "tenant". tenants: resumo por tenant (adquiridas x atribuídas)
         "m365": {"sku_principal": "Microsoft 365 Business Standard", "tenant_principal": M365_PRIMARY,
-                 "limite_minimo": 1, "skus": skus, "tenants": m365_tenants,
+                 "limite_minimo": 1, "skus": skus, "tenants": m365_tenants, "empresas": empresas,
                  "sem_alerta": True},   # no M365 100% de uso é normal: o artefato não alerta
         "outras_plataformas": outras,
     }
@@ -2115,6 +2183,7 @@ def inventario_snapshot(request: Request):
         "data": datetime.now().strftime("%Y-%m-%d"),
         "docusign": {"usadas": ds.get("professional", 0), "total": ds.get("seats"), "gaps": ds.get("gaps", 0)},
         "m365": [{"tenant": s["tenant"], "nome": s["nome"], "usadas": s["usadas"], "total": s["total"]} for s in skus],
+        "empresas": [{"id": e["id"], "licencas": e["licencas"], "contas": e["contas"]} for e in empresas],
         "outras": [{"id": o["id"], "contas": o["contas"]} for o in outras],
         **({"envelopes_total": envios["total"], "unidades": [{"nome": u["nome"], "total": u["total"]} for u in envios["unidades"]]} if envios else {}),
     }

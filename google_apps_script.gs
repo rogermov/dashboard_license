@@ -22,6 +22,9 @@
  *     o script foi autorizado quando só LIA usuários. Selecione a função autorizar() no topo do
  *     editor e clique em Executar ▶; aceite a tela do Google (ela pede "ver e gerenciar usuários").
  *     A conta precisa ser Super Admin ou ter o papel de admin "Gerenciamento de usuários".
+ *  6) LICENÇAS (quantas de cada tipo estão atribuídas): ative também o serviço avançado
+ *     "Enterprise License Manager API" (Services (+) → identifier: AdminLicenseManager) e rode
+ *     autorizar() de novo (o Google pede "ver as licenças"). O AccessGuard chama GET ?acao=licencas.
  *  Depois de colar uma versão nova: Deploy → Manage deployments → editar → Version: New version
  *  (assim a URL /exec continua a mesma).
  */
@@ -34,6 +37,26 @@ function autorizar() {
   var u = AdminDirectory.Users.get(me);
   Logger.log('Autorizado como ' + u.primaryEmail + '. Admin: ' + u.isAdmin + ' / admin delegado: ' + u.isDelegatedAdmin);
   if (false) AdminDirectory.Users.update({}, me); // nunca roda: só declara o uso do escopo de escrita
+  var lic = AdminLicenseManager.LicenseAssignments.listForProduct('Google-Apps', dominio_(), { maxResults: 1 });
+  Logger.log('Licenças: leitura OK (' + ((lic.items || []).length ? 'há atribuições' : 'nenhuma atribuição') + ').');
+}
+
+// Domínio principal da conta Google (a API de licenças pede o domínio, não "my_customer").
+function dominio_() {
+  return AdminDirectory.Customers.get('my_customer').customerDomain;
+}
+
+// Licenças atribuídas: uma linha por usuário e tipo (skuName = nome no Admin Console).
+function licencas_() {
+  var out = [], pageToken, dom = dominio_();
+  do {
+    var r = AdminLicenseManager.LicenseAssignments.listForProduct('Google-Apps', dom, { maxResults: 1000, pageToken: pageToken });
+    (r.items || []).forEach(function (a) {
+      out.push({ email: String(a.userId || '').toLowerCase(), sku_id: String(a.skuId || ''), sku: String(a.skuName || a.skuId || '') });
+    });
+    pageToken = r.nextPageToken;
+  } while (pageToken);
+  return out;
 }
 
 // Cargo do Admin Console (organizations[].title; o primário, se houver).
@@ -75,7 +98,11 @@ function doPost(e) {
     return json_({ success: false, error: String(err) });
   }
 }
-function doGet() {
+function doGet(e) {
+  if (e && e.parameter && e.parameter.acao === 'licencas') {
+    try { return json_({ success: true, licencas: licencas_() }); }
+    catch (err) { return json_({ success: false, error: String(err) }); }
+  }
   try {
     var users = [];
     var pageToken;

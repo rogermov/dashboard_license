@@ -827,13 +827,89 @@ def google_sync():
                 conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email, "google", name)); count += 1
 
         conn.commit()
+        try:
+            lic_msg = _google_sync_licenses(conn, url)
+        except Exception as e:
+            print(f"[google] licenças: {e}")
+            lic_msg = f" ⚠ Licenças não lidas: {str(e)[:160]}"
         _safe_rebuild_offboarding()
-        return {"message": f"Google Atualizado! {count} injetados."}
+        return {"message": f"Google Atualizado! {count} injetados.{lic_msg}"}
     except HTTPException:
         raise
     except Exception as e:
         print(f"Erro no google_sync: {e}")
         raise HTTPException(status_code=500, detail=f"Falha ao sincronizar o Google Workspace: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+def _google_contratadas() -> dict:
+    """Total contratado por tipo de licença (backend/google_licencas.json): a API do Google só dá as atribuídas."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "google_licencas.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {k.strip().lower(): int(v) for k, v in (json.load(f).get("contratadas") or {}).items()}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+def _google_sync_licenses(conn, url) -> str:
+    """GET ?acao=licencas no Apps Script (Enterprise License Manager): uma linha por usuário e tipo."""
+    sep = "&" if "?" in url else "?"
+    resp = requests.get(url + sep + "acao=licencas", timeout=120)
+    try:
+        data = resp.json()
+    except ValueError:
+        raise Exception("o Apps Script não respondeu JSON. Publicou a versão nova (com ?acao=licencas)?")
+    if not data.get("success"):
+        err = str(data.get("error", ""))
+        if "AdminLicenseManager" in err or "not defined" in err:
+            err = "ative o serviço 'Enterprise License Manager API' no Apps Script e rode autorizar()"
+        raise Exception(err or "erro no Apps Script")
+    if "licencas" not in data:   # script antigo ignora ?acao= e devolve os usuários
+        raise Exception("o Apps Script publicado ainda é a versão antiga: cole o código novo e publique uma nova versão")
+    rows = data.get("licencas") or []
+    conn.execute("""CREATE TABLE IF NOT EXISTS google_licenses (
+        sku_id TEXT PRIMARY KEY, nome TEXT, atribuidas INTEGER, synced_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    try:
+        conn.execute("ALTER TABLE google_users ADD COLUMN licenca TEXT")
+    except sqlite3.OperationalError:
+        pass
+    cont, nomes, por_email = {}, {}, {}
+    for r in rows:
+        sid = r.get("sku_id") or r.get("sku") or ""
+        if not sid:
+            continue
+        cont[sid] = cont.get(sid, 0) + 1
+        nomes[sid] = r.get("sku") or sid
+        em = (r.get("email") or "").lower().strip()
+        if em:
+            por_email.setdefault(em, []).append(nomes[sid])
+    conn.execute("DELETE FROM google_licenses")
+    for sid, n in cont.items():
+        conn.execute("INSERT INTO google_licenses (sku_id, nome, atribuidas, synced_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)", (sid, nomes[sid], n))
+    conn.execute("UPDATE google_users SET licenca=NULL")
+    conn.executemany("UPDATE google_users SET licenca=? WHERE email=?", [(";".join(v), k) for k, v in por_email.items()])
+    conn.commit()
+    return f" {sum(cont.values())} licenças em {len(cont)} tipos."
+
+def _google_licencas(conn) -> list:
+    """Atribuídas (API) x contratadas (google_licencas.json), por tipo. Vazio se ainda não sincronizou."""
+    try:
+        rows = conn.execute("SELECT nome, atribuidas FROM google_licenses ORDER BY atribuidas DESC").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    tot = _google_contratadas()
+    out = []
+    for r in rows:
+        total = tot.get((r["nome"] or "").strip().lower())
+        out.append({"nome": r["nome"], "atribuidas": r["atribuidas"], "total": total,
+                    "disponiveis": max(0, total - r["atribuidas"]) if total is not None else None})
+    return out
+
+@app.get("/google/licenses")
+def google_licenses():
+    conn = get_db()
+    try:
+        return _google_licencas(conn)
     finally:
         conn.close()
 
@@ -2088,7 +2164,8 @@ def licenses_health():
                                         "atribuidas": sum(l["consumed"] for l in mine)})
         try:
             g = {r[0]: r[1] for r in conn.execute("SELECT status, COUNT(*) FROM google_users GROUP BY status")}
-            out["google"] = {"active": g.get("active", 0), "suspended": g.get("suspended", 0), "total": sum(g.values())}
+            out["google"] = {"active": g.get("active", 0), "suspended": g.get("suspended", 0), "total": sum(g.values()),
+                             "licencas": _google_licencas(conn)}
         except sqlite3.OperationalError:
             pass
     finally:
@@ -2164,7 +2241,8 @@ def inventario_snapshot(request: Request):
                         for t in health.get("m365_tenants") or []]
         plat = {r[0]: r[1] for r in conn.execute("SELECT platform, COUNT(*) FROM platform_users GROUP BY platform")}
         g = health.get("google") or {}
-        outras = [{"id": "google", "nome": "Google Workspace", "contas": g.get("active", 0), "suspensas": g.get("suspended", 0)}]
+        outras = [{"id": "google", "nome": "Google Workspace", "contas": g.get("active", 0), "suspensas": g.get("suspended", 0),
+                   "licencas": g.get("licencas") or []}]
         for pid, nome in (("jira", "Jira"), ("bitbucket", "Bitbucket"), ("lucid", "Lucid")):
             if plat.get(pid):
                 outras.append({"id": pid, "nome": nome, "contas": plat[pid]})
@@ -2195,7 +2273,9 @@ def inventario_snapshot(request: Request):
         "docusign": {"usadas": ds.get("professional", 0), "total": ds.get("seats"), "gaps": ds.get("gaps", 0)},
         "m365": [{"tenant": s["tenant"], "nome": s["nome"], "usadas": s["usadas"], "total": s["total"]} for s in skus],
         "empresas": [{"id": e["id"], "licencas": e["licencas"], "contas": e["contas"]} for e in empresas],
-        "outras": [{"id": o["id"], "contas": o["contas"]} for o in outras],
+        "outras": [{"id": o["id"], "contas": o["contas"],
+                    **({"licencas": [{"nome": l["nome"], "atribuidas": l["atribuidas"], "total": l["total"]} for l in o["licencas"]]} if o.get("licencas") else {})}
+                   for o in outras],
         **({"envelopes_total": envios["total"], "unidades": [{"nome": u["nome"], "total": u["total"]} for u in envios["unidades"]]} if envios else {}),
     }
     return {"atual": snap, "historico": historico}

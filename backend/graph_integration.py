@@ -90,6 +90,14 @@ def get_users(token: str) -> list:
         url = data.get("@odata.nextLink")
     return all_users
 
+def get_org_name(token: str) -> str:
+    """Nome oficial do tenant (Entra ID → Visão geral). Precisa de Organization.Read.All."""
+    resp = requests.get(f"{GRAPH_BASE}/organization?$select=displayName", headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    if resp.status_code != 200:
+        return ""
+    vals = resp.json().get("value") or []
+    return (vals[0].get("displayName") or "").strip() if vals else ""
+
 def get_subscribed_skus(token: str) -> list:
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(f"{GRAPH_BASE}/subscribedSkus", headers=headers, timeout=30)
@@ -104,6 +112,10 @@ SKU_FRIENDLY_NAMES = {
     "SPE_F1": "Microsoft 365 F3",
     "M365_F1_COMM": "Microsoft 365 F1",
     "Microsoft_Teams_Exploratory_Dept": "Teams Exploratory",
+    "Microsoft_Teams_Enterprise_New": "Microsoft Teams Enterprise",
+    "Microsoft_Teams_Premium": "Teams Premium",
+    "MICROSOFT_365_COPILOT_BUSINESS_DEPT": "Microsoft 365 Copilot Business",
+    "PBI_PREMIUM_PER_USER_ADDON": "Power BI Premium por usuário (add-on)",
     "ENTERPRISEPACK": "Office 365 E3",
     "ENTERPRISEPREMIUM": "Office 365 E5",
     "ENTERPRISEWITHSCAL": "Office 365 E4",

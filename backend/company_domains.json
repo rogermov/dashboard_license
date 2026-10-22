@@ -8,6 +8,17 @@
     "mobifacil.com.br", "fretamento.mobifacil.com.br", "mobicorp.mobifacil.com.br", "mobicorpviagem.com.br",
     "mobiencomendas.com.br", "mobiuse.com.br", "viajemais.net.br", "viajemaisapp.com.br"
   ],
+  "_nomes": "Nome exibido de cada empresa (resumo de licenças por empresa). Sem entrada aqui, usa a chave com iniciais maiúsculas.",
+  "nomes": {
+    "piracicabana": "Viação Piracicabana", "metro bh": "Metrô BH", "tic trens": "TIC Trens", "trivia trens": "Trivia Trens",
+    "itamarati": "Expresso Itamarati", "br mobilidade": "BR Mobilidade", "blumob": "Blumob", "caxiense": "Caxiense",
+    "cidade verde": "Cidade Verde", "maringa": "Expresso Maringá", "joseense": "Joseense", "grande bauru": "Grande Bauru",
+    "princesa do norte": "Princesa do Norte", "guaratiba": "Guaratiba (GTURJ)", "nsa da penha": "Nossa Senhora da Penha",
+    "cidade cancao": "Cidade Canção", "transportes lider": "Transportes Líder", "uniao transp de encomenda": "União Encomendas",
+    "expresso uniao": "Expresso União", "expresso de prata": "Expresso de Prata", "empresa cruz": "Empresa Cruz",
+    "quality bus": "Quality Bus", "patrimony": "Patrimony", "borealis": "Borealis", "piracicabana holding": "Piracicabana Holding (Comporte)",
+    "uniao incorporadora": "União Incorporadora", "breda": "Breda Serviços"
+  },
   "empresas": {
     "piracicabana": ["piracicabana.com.br", "viacaopiracicabana.com.br", "piracicabanadf.com.br", "piracicabanablumenau.com.br",
                      "piracicabanacargas.com.br", "piracicabanauberaba.com.br", "piracicabanainvestidores.com.br"],
@@ -39,6 +50,8 @@
     "quality bus": ["qualitybus.com.br"],
     "patrimony": ["patrimony.com.br"],
     "borealis": ["corretoraborealis.com.br"],
+    "uniao incorporadora": ["uniaoincorporadora.com.br"],
+    "breda": ["bredaservicos.com.br"],
     "piracicabana holding": ["comporte.com.br"]
   }
 }

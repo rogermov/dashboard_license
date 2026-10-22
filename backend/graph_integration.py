@@ -90,6 +90,14 @@ def get_users(token: str) -> list:
         url = data.get("@odata.nextLink")
     return all_users
 
+def get_org_name(token: str) -> str:
+    """Nome oficial do tenant (Entra ID → Visão geral). Precisa de Organization.Read.All."""
+    resp = requests.get(f"{GRAPH_BASE}/organization?$select=displayName", headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    if resp.status_code != 200:
+        return ""
+    vals = resp.json().get("value") or []
+    return (vals[0].get("displayName") or "").strip() if vals else ""
+
 def get_subscribed_skus(token: str) -> list:
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(f"{GRAPH_BASE}/subscribedSkus", headers=headers, timeout=30)

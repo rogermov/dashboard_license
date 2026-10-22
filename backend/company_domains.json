@@ -16,7 +16,8 @@
     "princesa do norte": "Princesa do Norte", "guaratiba": "Guaratiba (GTURJ)", "nsa da penha": "Nossa Senhora da Penha",
     "cidade cancao": "Cidade Canção", "transportes lider": "Transportes Líder", "uniao transp de encomenda": "União Encomendas",
     "expresso uniao": "Expresso União", "expresso de prata": "Expresso de Prata", "empresa cruz": "Empresa Cruz",
-    "quality bus": "Quality Bus", "patrimony": "Patrimony", "borealis": "Borealis", "piracicabana holding": "Piracicabana Holding (Comporte)"
+    "quality bus": "Quality Bus", "patrimony": "Patrimony", "borealis": "Borealis", "piracicabana holding": "Piracicabana Holding (Comporte)",
+    "uniao incorporadora": "União Incorporadora", "breda": "Breda Serviços"
   },
   "empresas": {
     "piracicabana": ["piracicabana.com.br", "viacaopiracicabana.com.br", "piracicabanadf.com.br", "piracicabanablumenau.com.br",
@@ -49,6 +50,8 @@
     "quality bus": ["qualitybus.com.br"],
     "patrimony": ["patrimony.com.br"],
     "borealis": ["corretoraborealis.com.br"],
+    "uniao incorporadora": ["uniaoincorporadora.com.br"],
+    "breda": ["bredaservicos.com.br"],
     "piracicabana holding": ["comporte.com.br"]
   }
 }

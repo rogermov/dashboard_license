@@ -1,0 +1,9 @@
+{
+  "_leia": "Licenças CONTRATADAS do Google Workspace por tipo (nome igual ao do Admin Console > Faturamento > Assinaturas). A API do Google só informa as atribuídas; o total contratado vem daqui. Atualize quando o contrato mudar. Total = disponíveis + atribuídas.",
+  "atualizado_em": "2026-10-22",
+  "contratadas": {
+    "Google Workspace Enterprise Standard": 600,
+    "Google Workspace Enterprise Starter": 3016,
+    "Google Workspace Frontline Starter": 6400
+  }
+}

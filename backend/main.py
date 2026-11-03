@@ -1146,7 +1146,7 @@ def _license_alerts(conn):
         print(f"Erro ao buscar seats p/ alerta: {e}")
     if seats and prof >= seats * threshold:
         extra = f" — ACIMA DO LIMITE em {prof - seats}" if prof > seats else ""
-        alerts.append(f"*DocuSign Professional:* {prof}/{seats} assentos{extra}")
+        alerts.append(f"*DocuSign Professional:* {prof}/{seats} licenças{extra}")
     # Microsoft 365: desligado por padrão (o pedido foi receber só limites do DocuSign).
     # Ative com ALERT_INCLUDE_M365=true. SKUs com tamanho relevante (>=5 assentos).
     if os.getenv("ALERT_INCLUDE_M365", "false").lower() == "true":
@@ -2221,9 +2221,8 @@ def alerts_docusign_sem_uso(force: bool = False):
     n, prof = lista["resumo"]["elegiveis"], lista["resumo"]["professional"]
     ok = True
     if n:
-        link = os.getenv("PAINEL_URL", "http://54.85.24.144").rstrip("/") + "/sistemas/docusign"
         text = (f"*DocuSign · revisão mensal ({periodo})*\n{n} usuário(s) enviaram menos de {lista['limite']} envelopes"
-                f" ({prof} com licença Professional). Revise e aplique Free + Viewer: {link}")
+                f" ({prof} com licença Professional). Revise no painel e aplique Free + Viewer.")
         try:
             ok = requests.post(webhook, json={"text": text}, timeout=15).status_code == 200
         except requests.RequestException:

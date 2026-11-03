@@ -1,5 +1,5 @@
-# Role da instância EC2, com permissão mínima: só consegue ler/gravar no bucket
-# de backup do próprio AccessGuard. Nada de S3 geral, nada de outros serviços.
+# Role da instância EC2, com permissão mínima: ler/gravar no bucket de backup do
+# próprio AccessGuard + Session Manager (SSM). Nada de S3 geral.
 
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
@@ -33,6 +33,13 @@ resource "aws_iam_role_policy" "backup_access" {
   name   = "${var.project_name}-s3-backup-access"
   role   = aws_iam_role.ec2.id
   policy = data.aws_iam_policy_document.backup_access.json
+}
+
+# Session Manager: terminal pelo console AWS de qualquer lugar, sem chave .pem e
+# sem abrir a porta 22 (o agente já vem instalado na AMI do Ubuntu).
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.ec2.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
 resource "aws_iam_instance_profile" "ec2" {

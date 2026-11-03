@@ -22,10 +22,14 @@ variable "root_volume_size" {
   default     = 16
 }
 
-variable "ssh_cidr" {
-  description = "Faixa de IPs liberada para acessar a porta 22 (SSH). 0.0.0.0/0 = qualquer lugar (você escolheu essa opção — por isso o user_data reforça com fail2ban + login só por chave)."
-  type        = string
-  default     = "0.0.0.0/0"
+variable "ssh_cidrs" {
+  description = "IPs liberados para a porta 22 (SSH), em /32. Obrigatório e fora do git: defina em terraform.tfvars. Se o IP mudar, ajuste lá (ou no Security Group pelo console) — o painel (porta 80) não depende disso."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.ssh_cidrs) > 0 && !contains(var.ssh_cidrs, "0.0.0.0/0")
+    error_message = "Informe ao menos um IP e não use 0.0.0.0/0."
+  }
 }
 
 variable "alert_email" {

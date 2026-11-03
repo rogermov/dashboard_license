@@ -32,6 +32,7 @@ ufw --force enable
 # ── SSH só por chave — nunca senha (importante porque o SG está liberado para 0.0.0.0/0) ──
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' /etc/ssh/sshd_config
+echo "PermitRootLogin no" > /etc/ssh/sshd_config.d/99-accessguard.conf
 systemctl restart ssh
 
 # ── fail2ban contra brute-force de SSH ──

@@ -203,8 +203,14 @@ então essa janela é **10h–23h UTC**. Qualquer cron **fora** dessa janela **n
 - Os dois `aws_budgets_budget` (US$1 "canário" e US$10 "teto") te avisam por
   e-mail antes de qualquer coisa virar surpresa.
 
-## Segurança (dado que você escolheu SSH aberto a 0.0.0.0/0)
+## Segurança
 
+- SSH (porta 22) liberado só para os IPs de `ssh_cidrs`, definidos no
+  `terraform.tfvars` (fora do git). Se o IP mudar e o SSH parar de conectar,
+  inclua o novo IP no Security Group `accessguard-sg` pelo console AWS e
+  depois no `terraform.tfvars`.
+- A EC2 tem `prevent_destroy` e ignora mudança de AMI/user_data: um `apply`
+  nunca recria a máquina (o banco fica no disco dela).
 - Login por senha está **desabilitado** (`PasswordAuthentication no`) — só
   entra com a chave `.pem` gerada.
 - `fail2ban` ativo, banindo IPs com tentativas de força bruta.

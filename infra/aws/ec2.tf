@@ -40,6 +40,14 @@ resource "aws_instance" "app" {
   })
   user_data_replace_on_change = true
 
+  # A instância guarda o banco (SQLite) no disco raiz: nunca recriar por acidente.
+  # Sem isso, uma AMI nova do Ubuntu (most_recent) ou mudança no user_data faz o
+  # próximo `apply` destruir a máquina e o disco junto.
+  lifecycle {
+    ignore_changes  = [ami, user_data]
+    prevent_destroy = true
+  }
+
   tags = {
     Name = "${var.project_name}-server"
   }

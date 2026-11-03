@@ -180,7 +180,8 @@ GERAL_SPEC = {**_COMMON,
 
 def read_hr_sheet(url: str):
     """Lê as abas de desligados e do censo (Geral) a partir do link do mês.
-    As abas são reconhecidas pelas colunas, não pelo gid nem pelo nome."""
+    As abas são reconhecidas pelas colunas, não pelo gid nem pelo nome. A Geral
+    pode vir sem a coluna Status (desde nov/2026 ela traz só os ativos)."""
     m = SHEET_ID_RE.search(url or "")
     if not m:
         raise ValueError("Link inválido: cole o link do Google Sheets (docs.google.com/spreadsheets/d/...).")
@@ -196,7 +197,7 @@ def read_hr_sheet(url: str):
         if not rows:
             continue
         heads = [fold(h) for h in rows[0].keys()]
-        is_geral = "status" in heads and any("data de entrada" in h for h in heads)
+        is_geral = any("data de entrada" in h for h in heads) and not any("data de sa" in h for h in heads)
         is_deslig = any("data de sa" in h for h in heads) and "status" not in heads
         if is_geral and geral is None:
             geral = rows
@@ -230,13 +231,14 @@ def parse_terminations(rows):
 
 
 def census_index(rows):
-    """Colaboradores 'Presente' no censo, indexados pelo nome normalizado."""
+    """Colaboradores 'Presente' no censo, indexados pelo nome normalizado.
+    Sem coluna Status, a aba já é só de ativos: todas as linhas contam."""
     if not rows:
         return {}
     c = _map_cols(rows[0].keys(), GERAL_SPEC)
     idx = defaultdict(list)
     for r in rows:
-        if fold(r.get(c.get("status"), "")) != "presente":
+        if c.get("status") and fold(r.get(c.get("status"), "")) != "presente":
             continue
         idx[normalize_name(r.get(c.get("name"), ""))].append({
             "matricula": str(r.get(c.get("matricula"), "") or "").strip(),

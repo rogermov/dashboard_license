@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { RefreshCw, CheckCircle, Clock, AlertTriangle, ExternalLink, Search, Download, Loader, Send, User, Filter, BadgeCheck, Info, AlertOctagon } from 'lucide-react';
+import { RefreshCw, CheckCircle, Clock, AlertTriangle, ExternalLink, Search, Download, Loader, Send, User, Filter, BadgeCheck, Info, AlertOctagon, UserMinus } from 'lucide-react';
 import { api } from '../hooks/api.js';
 import { exportCSV } from '../lib/csv.js';
 import Toast from '../components/Toast.jsx';
@@ -7,6 +7,7 @@ import { useToast } from '../hooks/useToast.js';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import { CountUp } from '../components/ui.jsx';
 import GapFixModal from '../components/GapFixModal.jsx';
+import SemUsoModal from '../components/SemUsoModal.jsx';
 
 const SM = { active: { label: 'Ativo', color: 'var(--green)', bg: 'var(--green-bg)' }, pending: { label: 'Pendente', color: 'var(--yellow)', bg: 'var(--yellow-bg)' } };
 
@@ -30,6 +31,8 @@ export default function Docusign() {
   const [availableLicenses, setAvailableLicenses] = useState([]);
   const [gapOnly, setGapOnly] = useState(false);
   const [gapModal, setGapModal] = useState(false);
+  const [semUsoModal, setSemUsoModal] = useState(false);
+  const [semUso, setSemUso] = useState(null);   // resumo da última revisão aberta
   const [usersLoading, setUsersLoading] = useState(false);
   const [importing, setImporting] = useState(false);
 
@@ -228,6 +231,16 @@ export default function Docusign() {
                 )}
               </div>
               {gapModal && <GapFixModal onClose={() => setGapModal(false)} onDone={() => { setGapModal(false); loadStatus(); loadUsers(); }} />}
+              {/* Revisão mensal: quem enviou poucos envelopes no mês anterior vai para Free + Viewer */}
+              <div role="button" tabIndex={0} onClick={() => setSemUsoModal(true)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSemUsoModal(true); } }}
+                className="card--interactive" style={{ cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '1.25rem', boxShadow: 'var(--shadow-sm)', borderTop: '3px solid var(--priority)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}><UserMinus size={15} color="var(--priority)" /><span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Licenças sem uso</span></div>
+                {semUso
+                  ? <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{semUso.resumo.elegiveis} <span style={{ fontSize: '0.78rem', fontWeight: 500, color: 'var(--text3)' }}>com menos de {semUso.limite} envios em {semUso.periodo}</span></div>
+                  : <div style={{ fontSize: '0.85rem', color: 'var(--text2)' }}>Revisão mensal: quem quase não enviou no mês anterior vai para Free + Viewer.</div>}
+                <button type="button" className="btn btn--sm btn--priority" style={{ marginTop: '0.6rem' }} onClick={e => { e.stopPropagation(); setSemUsoModal(true); }}>Revisar e liberar</button>
+              </div>
+              {semUsoModal && <SemUsoModal onLoaded={setSemUso} onClose={() => setSemUsoModal(false)} onDone={() => { setSemUsoModal(false); setSemUso(null); loadStatus(); loadUsers(); }} />}
             </div>
           )}
 

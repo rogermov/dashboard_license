@@ -827,13 +827,89 @@ def google_sync():
                 conn.execute("INSERT INTO platform_users (email, platform, display_name) VALUES (?, ?, ?) ON CONFLICT(email, platform) DO UPDATE SET display_name=excluded.display_name, imported_at=CURRENT_TIMESTAMP", (email, "google", name)); count += 1
 
         conn.commit()
+        try:
+            lic_msg = _google_sync_licenses(conn, url)
+        except Exception as e:
+            print(f"[google] licenças: {e}")
+            lic_msg = f" ⚠ Licenças não lidas: {str(e)[:160]}"
         _safe_rebuild_offboarding()
-        return {"message": f"Google Atualizado! {count} injetados."}
+        return {"message": f"Google Atualizado! {count} injetados.{lic_msg}"}
     except HTTPException:
         raise
     except Exception as e:
         print(f"Erro no google_sync: {e}")
         raise HTTPException(status_code=500, detail=f"Falha ao sincronizar o Google Workspace: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+def _google_contratadas() -> dict:
+    """Total contratado por tipo de licença (backend/google_licencas.json): a API do Google só dá as atribuídas."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "google_licencas.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {k.strip().lower(): int(v) for k, v in (json.load(f).get("contratadas") or {}).items()}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+def _google_sync_licenses(conn, url) -> str:
+    """GET ?acao=licencas no Apps Script (Enterprise License Manager): uma linha por usuário e tipo."""
+    sep = "&" if "?" in url else "?"
+    resp = requests.get(url + sep + "acao=licencas", timeout=120)
+    try:
+        data = resp.json()
+    except ValueError:
+        raise Exception("o Apps Script não respondeu JSON. Publicou a versão nova (com ?acao=licencas)?")
+    if not data.get("success"):
+        err = str(data.get("error", ""))
+        if "AdminLicenseManager" in err or "not defined" in err:
+            err = "ative o serviço 'Enterprise License Manager API' no Apps Script e rode autorizar()"
+        raise Exception(err or "erro no Apps Script")
+    if "licencas" not in data:   # script antigo ignora ?acao= e devolve os usuários
+        raise Exception("o Apps Script publicado ainda é a versão antiga: cole o código novo e publique uma nova versão")
+    rows = data.get("licencas") or []
+    conn.execute("""CREATE TABLE IF NOT EXISTS google_licenses (
+        sku_id TEXT PRIMARY KEY, nome TEXT, atribuidas INTEGER, synced_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    try:
+        conn.execute("ALTER TABLE google_users ADD COLUMN licenca TEXT")
+    except sqlite3.OperationalError:
+        pass
+    cont, nomes, por_email = {}, {}, {}
+    for r in rows:
+        sid = r.get("sku_id") or r.get("sku") or ""
+        if not sid:
+            continue
+        cont[sid] = cont.get(sid, 0) + 1
+        nomes[sid] = r.get("sku") or sid
+        em = (r.get("email") or "").lower().strip()
+        if em:
+            por_email.setdefault(em, []).append(nomes[sid])
+    conn.execute("DELETE FROM google_licenses")
+    for sid, n in cont.items():
+        conn.execute("INSERT INTO google_licenses (sku_id, nome, atribuidas, synced_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)", (sid, nomes[sid], n))
+    conn.execute("UPDATE google_users SET licenca=NULL")
+    conn.executemany("UPDATE google_users SET licenca=? WHERE email=?", [(";".join(v), k) for k, v in por_email.items()])
+    conn.commit()
+    return f" {sum(cont.values())} licenças em {len(cont)} tipos."
+
+def _google_licencas(conn) -> list:
+    """Atribuídas (API) x contratadas (google_licencas.json), por tipo. Vazio se ainda não sincronizou."""
+    try:
+        rows = conn.execute("SELECT nome, atribuidas FROM google_licenses ORDER BY atribuidas DESC").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    tot = _google_contratadas()
+    out = []
+    for r in rows:
+        total = tot.get((r["nome"] or "").strip().lower())
+        out.append({"nome": r["nome"], "atribuidas": r["atribuidas"], "total": total,
+                    "disponiveis": max(0, total - r["atribuidas"]) if total is not None else None})
+    return out
+
+@app.get("/google/licenses")
+def google_licenses():
+    conn = get_db()
+    try:
+        return _google_licencas(conn)
     finally:
         conn.close()
 
@@ -1897,6 +1973,95 @@ def _docusign_gap_rows(conn):
                         "email": (r["email"] or "").lower(), "name": r["name"], "raw": raw})
     return out
 
+def _ds_license_label(real: str) -> str:
+    r = (real or "").lower()
+    return "Professional" if "professional" in r else "Free" if "free" in r else (real or "")
+
+def _ds_is_admin(raw) -> bool:
+    return str(raw.get("isAdmin", "")).lower() == "true" or "admin" in (raw.get("permissionProfileName") or "").lower()
+
+def _ds_downgrade(conn, items, mode, actor, origem):
+    """Licença Free + perfil DocuSign Viewer, com as proteções do script mensal:
+    grupo nao_modificar (conta sem o grupo é pulada inteira), administradores e
+    OFFBOARDING_PROTECTED_EMAILS. items: [{row_id, account_id, account_name, email, name, raw, licenca}].
+    mode: preview (não registra) | simular | aplicar. Cada alteração vai para o Histórico com o
+    estado anterior (licença e perfil), para o botão de desfazer."""
+    real = mode == "aplicar" and _actions_enabled()
+    log_it = mode != "preview"
+    protected = _protected_emails()
+    cfg = get_config()
+    accounts = {x["id"]: x for x in cfg["accounts"] if x.get("id")}
+    token = get_jwt_token(cfg["integration_key"], cfg["user_id"], cfg["rsa_key_path"])
+    results = []
+    by_acc = {}
+    for g in items:
+        by_acc.setdefault(g["account_id"], []).append(g)
+
+    def log(g, status, detail, extra=None):
+        results.append({"email": g["email"], "name": g["name"], "account_name": g["account_name"],
+                        "profile": g["raw"].get("permissionProfileName"), "status": status, "detail": detail})
+        if log_it:
+            conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
+                status, detail, extra, actor) VALUES ('',?,?,?,?,?,?,?,?)""",
+                (g["name"], "docusign", g["email"], "downgrade", status, f"{origem}: {detail}",
+                 json.dumps(extra) if extra else None, actor))
+
+    for acc_id, group in by_acc.items():
+        acc = accounts.get(acc_id)
+        if not acc:
+            for g in group: log(g, "erro", "Conta DocuSign não configurada no .env")
+            continue
+        ok, prot_ids, prot_emails = ds_api.get_group_members(acc, token, DS_PROTECT_GROUP)
+        if not ok:
+            for g in group: log(g, "bloqueado", f"Conta pulada: grupo de proteção '{DS_PROTECT_GROUP}' não encontrado (fail-safe)")
+            continue
+        viewer_id = ds_api.get_permission_profile_id(acc, token, DS_GAP_PROFILE)
+        if not viewer_id:
+            for g in group: log(g, "erro", f"Perfil '{DS_GAP_PROFILE}' não existe nesta conta")
+            continue
+        todo = []
+        for g in group:
+            raw, uid = g["raw"], g["raw"].get("userId")
+            if uid in prot_ids or g["email"] in prot_emails:
+                log(g, "bloqueado", f"Protegido: grupo '{DS_PROTECT_GROUP}'"); continue
+            if _ds_is_admin(raw):
+                log(g, "bloqueado", "Protegido: administrador da conta"); continue
+            if g["email"] in protected:
+                log(g, "bloqueado", "Protegido: OFFBOARDING_PROTECTED_EMAILS"); continue
+            if not uid:
+                log(g, "erro", "Sem userId; rode o sync do DocuSign"); continue
+            todo.append(g)
+        if not todo:
+            continue
+        if not real:
+            for g in todo:
+                perfil, lic = g["raw"].get("permissionProfileName") or "?", g.get("licenca") or "?"
+                passos = []
+                if lic.lower() != DS_GAP_LICENSE.lower(): passos.append(f"licença {lic} → {DS_GAP_LICENSE}")
+                if perfil.lower() != DS_GAP_PROFILE.lower(): passos.append(f"perfil {perfil} → {DS_GAP_PROFILE}")
+                log(g, "simulado" if mode != "preview" else "previsto",
+                    ("Simulação: " if mode != "preview" else "") + ("; ".join(passos) or "sem mudança"))
+            continue
+        errs = ds_api.update_users(acc, token, [
+            {"userId": g["raw"]["userId"], "licenseType": DS_GAP_LICENSE, "permissionProfileId": viewer_id} for g in todo])
+        for g in todo:
+            raw = g["raw"]; err = errs.get(raw["userId"])
+            if err:
+                log(g, "erro", err[:300]); continue
+            extra = {"account_id": acc_id, "userId": raw["userId"], "old_license": g.get("licenca") or "Professional",
+                     "old_profile_id": raw.get("permissionProfileId"), "old_profile_name": raw.get("permissionProfileName")}
+            log(g, "ok", f"Licença {DS_GAP_LICENSE} + perfil {DS_GAP_PROFILE}", extra)
+            # reflete na base sem esperar o próximo sync
+            raw["permissionProfileId"], raw["permissionProfileName"] = viewer_id, DS_GAP_PROFILE
+            conn.execute("UPDATE docusign_users SET raw_json=? WHERE id=?", (json.dumps(raw), g["row_id"]))
+            conn.execute("UPDATE docusign_license_import SET license_type=? WHERE account_id=? AND LOWER(email)=?",
+                         (DS_GAP_LICENSE, acc_id, g["email"]))
+        conn.commit()
+    conn.commit()
+    return {"mode": mode, "real": real, "results": results,
+            "ok": sum(r["status"] == "ok" for r in results), "errors": sum(r["status"] == "erro" for r in results),
+            "protegidos": sum(r["status"] == "bloqueado" for r in results)}
+
 class GapFixRequest(BaseModel):
     mode: str = "preview"        # preview (não registra) | simular | aplicar
     emails: Optional[list[str]] = None   # só estes (opcional)
@@ -1905,89 +2070,173 @@ class GapFixRequest(BaseModel):
 def docusign_gaps_fix(req: GapFixRequest, request: Request):
     if req.mode not in ("preview", "simular", "aplicar"):
         raise HTTPException(status_code=400, detail="Modo inválido.")
-    real = req.mode == "aplicar" and _actions_enabled()
-    log_it = req.mode != "preview"
-    actor, protected = _actor(request), _protected_emails()
-    cfg = get_config()
-    accounts = {a["id"]: a for a in cfg["accounts"] if a.get("id")}
-    token = get_jwt_token(cfg["integration_key"], cfg["user_id"], cfg["rsa_key_path"])
-    results = []
     conn = get_db()
     try:
         gaps = _docusign_gap_rows(conn)
         if req.emails:
             wanted = {e.lower() for e in req.emails}
             gaps = [g for g in gaps if g["email"] in wanted]
-        by_acc = {}
         for g in gaps:
-            by_acc.setdefault(g["account_id"], []).append(g)
-
-        def log(g, status, detail, extra=None):
-            results.append({"email": g["email"], "name": g["name"], "account_name": g["account_name"],
-                            "profile": g["raw"].get("permissionProfileName"), "status": status, "detail": detail})
-            if log_it:
-                conn.execute("""INSERT INTO offboarding_actions (matricula, person_name, platform, account_email, action,
-                    status, detail, extra, actor) VALUES ('',?,?,?,?,?,?,?,?)""",
-                    (g["name"], "docusign", g["email"], "downgrade", status, detail,
-                     json.dumps(extra) if extra else None, actor))
-
-        for acc_id, items in by_acc.items():
-            acc = accounts.get(acc_id)
-            if not acc:
-                for g in items: log(g, "erro", "Conta DocuSign não configurada no .env")
-                continue
-            ok, prot_ids, prot_emails = ds_api.get_group_members(acc, token, DS_PROTECT_GROUP)
-            if not ok:
-                for g in items: log(g, "bloqueado", f"Conta pulada: grupo de proteção '{DS_PROTECT_GROUP}' não encontrado (fail-safe)")
-                continue
-            viewer_id = ds_api.get_permission_profile_id(acc, token, DS_GAP_PROFILE)
-            if not viewer_id:
-                for g in items: log(g, "erro", f"Perfil '{DS_GAP_PROFILE}' não existe nesta conta")
-                continue
-            todo = []
-            for g in items:
-                raw, uid = g["raw"], g["raw"].get("userId")
-                pname = (raw.get("permissionProfileName") or "")
-                if uid in prot_ids or g["email"] in prot_emails:
-                    log(g, "bloqueado", f"Protegido: grupo '{DS_PROTECT_GROUP}'"); continue
-                if str(raw.get("isAdmin", "")).lower() == "true" or "admin" in pname.lower():
-                    log(g, "bloqueado", "Protegido: administrador da conta"); continue
-                if g["email"] in protected:
-                    log(g, "bloqueado", "Protegido: OFFBOARDING_PROTECTED_EMAILS"); continue
-                if not uid:
-                    log(g, "erro", "Sem userId; rode o sync do DocuSign"); continue
-                todo.append(g)
-            if not todo:
-                continue
-            if not real:
-                for g in todo:
-                    perfil = g["raw"].get("permissionProfileName") or "?"
-                    passo = f"licença Professional → {DS_GAP_LICENSE}" + (
-                        "" if perfil.lower() == DS_GAP_PROFILE.lower() else f"; perfil {perfil} → {DS_GAP_PROFILE}")
-                    log(g, "simulado" if req.mode != "preview" else "previsto",
-                        ("Simulação: " if req.mode != "preview" else "") + passo)
-                continue
-            errs = ds_api.update_users(acc, token, [
-                {"userId": g["raw"]["userId"], "licenseType": DS_GAP_LICENSE, "permissionProfileId": viewer_id} for g in todo])
-            for g in todo:
-                raw = g["raw"]; err = errs.get(raw["userId"])
-                if err:
-                    log(g, "erro", err[:300]); continue
-                extra = {"account_id": acc_id, "userId": raw["userId"], "old_license": "Professional",
-                         "old_profile_id": raw.get("permissionProfileId"), "old_profile_name": raw.get("permissionProfileName")}
-                log(g, "ok", f"Licença {DS_GAP_LICENSE} + perfil {DS_GAP_PROFILE}", extra)
-                # reflete na base sem esperar o próximo sync
-                raw["permissionProfileId"], raw["permissionProfileName"] = viewer_id, DS_GAP_PROFILE
-                conn.execute("UPDATE docusign_users SET raw_json=? WHERE id=?", (json.dumps(raw), g["row_id"]))
-                conn.execute("UPDATE docusign_license_import SET license_type=? WHERE account_id=? AND LOWER(email)=?",
-                             (DS_GAP_LICENSE, acc_id, g["email"]))
-            conn.commit()
-        conn.commit()
+            g["licenca"] = "Professional"
+        return _ds_downgrade(conn, gaps, req.mode, _actor(request), "Gap de licença")
     finally:
         conn.close()
-    return {"mode": req.mode, "real": real, "results": results,
-            "ok": sum(r["status"] == "ok" for r in results), "errors": sum(r["status"] == "erro" for r in results),
-            "protegidos": sum(r["status"] == "bloqueado" for r in results)}
+
+# ─── DocuSign: licenças sem uso (downgrade mensal, antes feito por script) ──
+# Regra do script: quem enviou MENOS de DOCUSIGN_SEM_USO_LIMITE (5) envelopes no mês
+# anterior fechado vai para Free + DocuSign Viewer. O nº de envios é o MAIOR do e-mail em
+# qualquer conta; sem envio = 0. Quem já é Viewer fica de fora (nada a fazer), e quem entrou
+# na conta depois do início do mês também (ainda não teve um mês cheio). Proteções em _ds_downgrade.
+
+DS_SEM_USO_LIMITE = int(os.getenv("DOCUSIGN_SEM_USO_LIMITE", "5"))
+
+def _ds_periodo_anterior():
+    hoje = datetime.now()
+    fim = hoje.replace(day=1) - timedelta(days=1)
+    ini = fim.replace(day=1)
+    return ini.date(), fim.date(), f"{_MESES_PT[ini.month - 1]}/{ini.year}"
+
+def _ds_envios_usuarios(conn, ini, fim, periodo, refresh=False):
+    """Envelopes ENVIADOS por e-mail e conta no período (data de envio, fuso de Brasília).
+    Guardado por período: o mês fechado não muda. Se alguma conta vier incompleta, não guarda
+    e levanta erro — contar 'sem dado' como 0 com leitura parcial rebaixaria quem usa."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS docusign_envios_usuario (
+        periodo TEXT, account_id TEXT, email TEXT, envios INTEGER, PRIMARY KEY(periodo, account_id, email))""")
+    conn.execute("CREATE TABLE IF NOT EXISTS docusign_envios_periodo (periodo TEXT PRIMARY KEY, gerado_em TEXT DEFAULT CURRENT_TIMESTAMP)")
+    done = conn.execute("SELECT gerado_em FROM docusign_envios_periodo WHERE periodo=?", (periodo,)).fetchone()
+    if not done or refresh:
+        cfg = get_config()
+        token = get_jwt_token(cfg["integration_key"], cfg["user_id"], cfg["rsa_key_path"])
+        accs = [x for x in cfg["accounts"] if x.get("id")]
+        with ThreadPoolExecutor(max_workers=max(1, len(accs))) as pool:
+            res = list(pool.map(lambda x: get_envelopes_count(x, token, ini.isoformat(), fim.isoformat()), accs))
+        for x, r in zip(accs, res):
+            if r.get("error"):
+                raise Exception(f"Envelopes de {x['name']}: {str(r['error'])[:200]}")
+            if r.get("partial"):
+                raise Exception(f"Envelopes de {x['name']}: leitura incompleta da API do DocuSign. Tente de novo em alguns minutos.")
+        conn.execute("DELETE FROM docusign_envios_usuario WHERE periodo=?", (periodo,))
+        for x, r in zip(accs, res):
+            conn.executemany("INSERT OR REPLACE INTO docusign_envios_usuario (periodo, account_id, email, envios) VALUES (?,?,?,?)",
+                             [(periodo, x["id"], u["email"], u["count"]) for u in r.get("users") or []])
+        conn.execute("INSERT OR REPLACE INTO docusign_envios_periodo (periodo, gerado_em) VALUES (?, CURRENT_TIMESTAMP)", (periodo,))
+        conn.commit()
+        done = conn.execute("SELECT gerado_em FROM docusign_envios_periodo WHERE periodo=?", (periodo,)).fetchone()
+    por_email, por_conta = {}, {}
+    for r in conn.execute("SELECT account_id, email, envios FROM docusign_envios_usuario WHERE periodo=?", (periodo,)):
+        por_conta[(r["account_id"], r["email"])] = r["envios"]
+        por_email[r["email"]] = max(r["envios"], por_email.get(r["email"], 0))
+    return por_email, por_conta, done["gerado_em"]
+
+def _ds_sem_uso(conn, refresh=False):
+    ini, fim, periodo = _ds_periodo_anterior()
+    por_email, por_conta, gerado_em = _ds_envios_usuarios(conn, ini, fim, periodo, refresh)
+    imported = {(r["account_id"], (r["email"] or "").lower()): r["license_type"]
+                for r in conn.execute("SELECT account_id, email, license_type FROM docusign_license_import")}
+    itens, novos = [], 0
+    for r in conn.execute("SELECT id, account_id, account_name, email, name, raw_json FROM docusign_users "
+                          "WHERE status IN ('active','pending')"):
+        raw = json.loads(r["raw_json"] or "{}")
+        email = (r["email"] or "").lower().strip()
+        if (raw.get("permissionProfileName") or "").lower() == DS_GAP_PROFILE.lower():
+            continue   # já é Viewer: nada a fazer (igual ao script)
+        env = por_email.get(email, 0)
+        if env >= DS_SEM_USO_LIMITE:
+            continue
+        entrou = (raw.get("userAddedToAccountDateTime") or raw.get("createdDateTime") or "")[:10]
+        if entrou and entrou >= ini.isoformat():
+            novos += 1
+            continue   # entrou na conta durante/depois do período: ainda não teve um mês cheio
+        itens.append({"row_id": r["id"], "account_id": r["account_id"], "account_name": r["account_name"], "email": email,
+                      "name": r["name"], "raw": raw, "licenca": _ds_license_label(imported.get((r["account_id"], email))),
+                      "envios": env, "envios_conta": por_conta.get((r["account_id"], email), 0), "entrou": entrou})
+    return {"periodo": periodo, "inicio": ini.isoformat(), "fim": fim.isoformat(), "limite": DS_SEM_USO_LIMITE,
+            "envios_lidos_em": to_brt(gerado_em) if gerado_em else None, "novos_ignorados": novos, "itens": itens}
+
+@app.get("/docusign/sem-uso")
+def docusign_sem_uso(refresh: bool = False):
+    """Lista do downgrade mensal, já com quem é protegido (e por quê). Não altera nada."""
+    conn = get_db()
+    try:
+        try:
+            base = _ds_sem_uso(conn, refresh)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Não foi possível contar os envios do mês: {str(e)[:250]}")
+        plano = _ds_downgrade(conn, base["itens"], "preview", "", "Sem uso")
+        res = {(x["account_name"], x["email"]): x for x in plano["results"]}
+        rows = []
+        for it in base["itens"]:
+            r = res.get((it["account_name"], it["email"]), {})
+            rows.append({"key": it["account_id"] + ":" + it["email"], "account_id": it["account_id"], "account_name": it["account_name"],
+                         "email": it["email"], "name": it["name"], "perfil": it["raw"].get("permissionProfileName"),
+                         "licenca": it["licenca"], "envios": it["envios"], "envios_conta": it["envios_conta"], "entrou": it["entrou"],
+                         "status": {"previsto": "elegivel", "bloqueado": "protegido"}.get(r.get("status"), r.get("status") or "erro"),
+                         "detalhe": r.get("detail", "")})
+        rows.sort(key=lambda x: (x["status"] != "elegivel", x["account_name"], x["envios"], x["name"] or ""))
+        el = [x for x in rows if x["status"] == "elegivel"]
+        return {**{k: v for k, v in base.items() if k != "itens"}, "rows": rows,
+                "resumo": {"elegiveis": len(el), "professional": sum(x["licenca"] == "Professional" for x in el),
+                           "protegidos": sum(x["status"] == "protegido" for x in rows),
+                           "erros": sum(x["status"] == "erro" for x in rows)}}
+    finally:
+        conn.close()
+
+class SemUsoRequest(BaseModel):
+    mode: str = "simular"            # simular | aplicar
+    keys: list[str] = []             # "account_id:email" escolhidos na tela
+
+@app.post("/docusign/sem-uso/aplicar")
+def docusign_sem_uso_aplicar(req: SemUsoRequest, request: Request):
+    if req.mode not in ("simular", "aplicar"):
+        raise HTTPException(status_code=400, detail="Modo inválido.")
+    if not req.keys:
+        raise HTTPException(status_code=400, detail="Escolha pelo menos um usuário.")
+    conn = get_db()
+    try:
+        # recalcula na hora: só age em quem AINDA está na regra (envios, perfil, data de entrada)
+        base = _ds_sem_uso(conn)
+        wanted = set(req.keys)
+        itens = [it for it in base["itens"] if it["account_id"] + ":" + it["email"] in wanted]
+        out = _ds_downgrade(conn, itens, req.mode, _actor(request), f"Sem uso em {base['periodo']} (< {base['limite']} envios)")
+        out["ignorados"] = len(wanted) - len(itens)
+        return out
+    finally:
+        conn.close()
+
+@app.post("/alerts/docusign-sem-uso")
+def alerts_docusign_sem_uso(force: bool = False):
+    """Lembrete mensal no Google Chat: na 1ª execução de cada mês (roda no sync diário)."""
+    ini, fim, periodo = _ds_periodo_anterior()
+    conn = get_db()
+    try:
+        done = conn.execute("SELECT value FROM app_settings WHERE key='ds_sem_uso_aviso'").fetchone()
+        if done and done["value"] == periodo and not force:
+            return {"notified": False, "reason": f"já avisado para {periodo}"}
+    finally:
+        conn.close()
+    webhook = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
+    if not webhook:
+        return {"notified": False, "reason": "GOOGLE_CHAT_WEBHOOK_URL não configurado"}
+    lista = docusign_sem_uso()
+    n, prof = lista["resumo"]["elegiveis"], lista["resumo"]["professional"]
+    ok = True
+    if n:
+        link = os.getenv("PAINEL_URL", "http://54.85.24.144").rstrip("/") + "/sistemas/docusign"
+        text = (f"*DocuSign · revisão mensal ({periodo})*\n{n} usuário(s) enviaram menos de {lista['limite']} envelopes"
+                f" ({prof} com licença Professional). Revise e aplique Free + Viewer: {link}")
+        try:
+            ok = requests.post(webhook, json={"text": text}, timeout=15).status_code == 200
+        except requests.RequestException:
+            ok = False
+    if ok:
+        conn = get_db()
+        try:
+            conn.execute("""INSERT INTO app_settings (key, value, updated_by) VALUES ('ds_sem_uso_aviso', ?, 'sync')
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value""", (periodo,))
+            conn.commit()
+        finally:
+            conn.close()
+    return {"notified": bool(n) and ok, "periodo": periodo, "elegiveis": n}
 
 
 # ─── Licenças M365 por empresa (domínio do e-mail) ───────────────────────────
@@ -2088,7 +2337,8 @@ def licenses_health():
                                         "atribuidas": sum(l["consumed"] for l in mine)})
         try:
             g = {r[0]: r[1] for r in conn.execute("SELECT status, COUNT(*) FROM google_users GROUP BY status")}
-            out["google"] = {"active": g.get("active", 0), "suspended": g.get("suspended", 0), "total": sum(g.values())}
+            out["google"] = {"active": g.get("active", 0), "suspended": g.get("suspended", 0), "total": sum(g.values()),
+                             "licencas": _google_licencas(conn)}
         except sqlite3.OperationalError:
             pass
     finally:
@@ -2164,7 +2414,8 @@ def inventario_snapshot(request: Request):
                         for t in health.get("m365_tenants") or []]
         plat = {r[0]: r[1] for r in conn.execute("SELECT platform, COUNT(*) FROM platform_users GROUP BY platform")}
         g = health.get("google") or {}
-        outras = [{"id": "google", "nome": "Google Workspace", "contas": g.get("active", 0), "suspensas": g.get("suspended", 0)}]
+        outras = [{"id": "google", "nome": "Google Workspace", "contas": g.get("active", 0), "suspensas": g.get("suspended", 0),
+                   "licencas": g.get("licencas") or []}]
         for pid, nome in (("jira", "Jira"), ("bitbucket", "Bitbucket"), ("lucid", "Lucid")):
             if plat.get(pid):
                 outras.append({"id": pid, "nome": nome, "contas": plat[pid]})
@@ -2195,7 +2446,9 @@ def inventario_snapshot(request: Request):
         "docusign": {"usadas": ds.get("professional", 0), "total": ds.get("seats"), "gaps": ds.get("gaps", 0)},
         "m365": [{"tenant": s["tenant"], "nome": s["nome"], "usadas": s["usadas"], "total": s["total"]} for s in skus],
         "empresas": [{"id": e["id"], "licencas": e["licencas"], "contas": e["contas"]} for e in empresas],
-        "outras": [{"id": o["id"], "contas": o["contas"]} for o in outras],
+        "outras": [{"id": o["id"], "contas": o["contas"],
+                    **({"licencas": [{"nome": l["nome"], "atribuidas": l["atribuidas"], "total": l["total"]} for l in o["licencas"]]} if o.get("licencas") else {})}
+                   for o in outras],
         **({"envelopes_total": envios["total"], "unidades": [{"nome": u["nome"], "total": u["total"]} for u in envios["unidades"]]} if envios else {}),
     }
     return {"atual": snap, "historico": historico}

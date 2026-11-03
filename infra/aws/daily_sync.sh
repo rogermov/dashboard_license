@@ -34,4 +34,7 @@ run "Google"         "google/sync"
 # (só envia se GOOGLE_CHAT_WEBHOOK_URL estiver configurado no .env).
 run "Alerta de licencas"        "alerts/license-check"
 run "Movimentacoes de usuarios" "alerts/changes-check"
+# 1ª execução do mês: lembra no Chat a revisão do DocuSign sem uso (o próprio endpoint
+# controla para avisar uma vez por mês)
+run "DocuSign sem uso (mensal)" "alerts/docusign-sem-uso"
 echo "[$(date -Is)] sync diário concluído" >> "$LOG"

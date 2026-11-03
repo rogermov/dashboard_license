@@ -150,6 +150,7 @@ def get_envelopes_count(account: dict, access_token: str, start_date: str, end_d
     user_counts = {}
     matched_total = 0
     pages = 0
+    partial = False
 
     def parse_iso(s):
         if not s: return None
@@ -166,6 +167,7 @@ def get_envelopes_count(account: dict, access_token: str, start_date: str, end_d
         if resp.status_code != 200:
             if pages == 0:
                 return {"total": 0, "users": [], "error": resp.text}
+            partial = True
             break  # já temos dados parciais das páginas anteriores; não descarta
 
         data = resp.json()
@@ -188,10 +190,12 @@ def get_envelopes_count(account: dict, access_token: str, start_date: str, end_d
         next_uri = data.get("nextUri")
         url = f"{base_uri}/restapi/v2.1{next_uri}" if next_uri else None
         if pages >= 80:  # trava de segurança contra loop infinito
+            partial = bool(url)
             break
 
     users_list = sorted(list(user_counts.values()), key=lambda x: x["count"], reverse=True)
-    return {"total": matched_total, "users": users_list, "error": None}
+    # partial=True: alguma página falhou ou bateu a trava; contagens podem estar abaixo do real
+    return {"total": matched_total, "users": users_list, "error": None, "partial": partial}
 
 # ─── ADMIN API (LicenseType real) ─────────────────────────────────────────────
 # A eSignature API não deixa LER o tipo de licença (só gravar via PUT). O valor real
